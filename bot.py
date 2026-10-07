@@ -15,9 +15,9 @@ from aiogram.exceptions import TelegramBadRequest
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# 👇 Set your Telegram ID and your tester's ID here
+# 👇 Твій ID (власник) та ID хелпера
 OWNER_ID = 5619415334       
-TESTER_ID = 8644168067      
+HELPER_ID = 8644168067      
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -27,10 +27,17 @@ class SearchStates(StatesGroup):
     waiting_for_length = State()
     waiting_for_digits = State()
 
-class CheckStates(StatesGroup):
-    waiting_for_username = State()
+class AdminStates(StatesGroup):
+    waiting_for_broadcast = State()
+    waiting_for_ban_id = State()
+    waiting_for_unban_id = State()
+    waiting_for_prem_id = State()
+    waiting_for_prem_days = State()
+    waiting_for_rem_prem_id = State()
+    waiting_for_stats_days = State()
+    waiting_for_code_input = State()
 
-# --- DATABASE SETUP (SQLite) ---
+# --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
@@ -40,7 +47,9 @@ def init_db():
             referrer_id INTEGER,
             referrals_count INTEGER DEFAULT 0,
             total_invited INTEGER DEFAULT 0,
-            premium_until TEXT
+            premium_until TEXT,
+            is_banned INTEGER DEFAULT 0,
+            joined_date TEXT
         )
     """)
     cursor.execute("""
@@ -59,13 +68,21 @@ def init_db():
             saved_at TEXT
         )
     """)
+    # Таблиця активованих промокодів користувача
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS used_codes (
+            user_id INTEGER,
+            code TEXT,
+            PRIMARY KEY (user_id, code)
+        )
+    """)
     conn.commit()
     conn.close()
 
 def get_user(user_id: int):
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, referrer_id, referrals_count, total_invited, premium_until FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT user_id, referrer_id, referrals_count, total_invited, premium_until, is_banned FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row
@@ -75,12 +92,19 @@ def add_user(user_id: int, referrer_id: int = None):
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO users (user_id, referrer_id) VALUES (?, ?)", (user_id, referrer_id))
+        joined = datetime.datetime.now().isoformat()
+        cursor.execute("INSERT INTO users (user_id, referrer_id, joined_date) VALUES (?, ?, ?)", (user_id, referrer_id, joined))
         conn.commit()
     conn.close()
 
+def is_user_banned(user_id: int) -> bool:
+    if user_id == OWNER_ID:
+        return False
+    user = get_user(user_id)
+    return bool(user[5]) if user else False
+
 def is_user_premium(user_id: int) -> bool:
-    if user_id in (OWNER_ID, TESTER_ID):
+    if user_id == OWNER_ID:
         return True
     user = get_user(user_id)
     if not user or not user[4]:
@@ -133,65 +157,37 @@ def get_saved_tags(user_id: int):
     conn.close()
     return rows
 
-def update_referral_progress(referrer_id: int):
+def get_users_count_by_days(days: int):
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT referrals_count, total_invited, premium_until FROM users WHERE user_id = ?", (referrer_id,))
-    row = cursor.fetchone()
-    
-    if row:
-        ref_count, total_inv, prem_until = row
-        ref_count += 1
-        total_inv += 1
-        
-        now = datetime.datetime.now()
-        current_prem = datetime.datetime.fromisoformat(prem_until) if prem_until and datetime.datetime.fromisoformat(prem_until) > now else now
-        
-        days_to_add = 0
-        reset_scale = False
-        
-        if ref_count == 2:
-            days_to_add = 1
-        elif ref_count == 3:
-            days_to_add = 3
-        elif ref_count >= 5:
-            days_to_add = 7
-            reset_scale = True 
-            
-        new_prem = current_prem + datetime.timedelta(days=days_to_add) if days_to_add > 0 else current_prem
-        new_ref_count = 0 if reset_scale else ref_count
-        
-        cursor.execute("""
-            UPDATE users 
-            SET referrals_count = ?, total_invited = ?, premium_until = ? 
-            WHERE user_id = ?
-        """, (new_ref_count, total_inv, new_prem.isoformat(), referrer_id))
-        conn.commit()
-        
-        if days_to_add > 0:
-            asyncio.create_task(
-                bot.send_message(
-                    referrer_id, 
-                    f"⚡ [System] Referral milestone reached. Access extended for +{days_to_add}d.",
-                    parse_mode="HTML"
-                )
-            )
+    target_date = (datetime.datetime.now() - datetime.timedelta(days=days)).isoformat()
+    cursor.execute("SELECT COUNT(*) FROM users WHERE joined_date >= ?", (target_date,))
+    count = cursor.fetchone()[0]
     conn.close()
+    return count
+
+def get_users_count_today():
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    cursor.execute("SELECT COUNT(*) FROM users WHERE joined_date LIKE ?", (f"{today_str}%",))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
 
 # --- KEYBOARDS ---
 def get_main_keyboard(user_id: int):
     keyboard = [
         [InlineKeyboardButton(text="🔍 Tag Search", callback_data="start_search")],
-        [InlineKeyboardButton(text="⚡ Direct Check", callback_data="start_check")],
         [InlineKeyboardButton(text="💾 Saved Tags", callback_data="menu_saved"),
          InlineKeyboardButton(text="📜 History", callback_data="menu_history")],
         [InlineKeyboardButton(text="💎 Premium & Status", callback_data="menu_premium")]
     ]
     
-    if user_id == TESTER_ID:
-        keyboard.append([InlineKeyboardButton(text="🧪 Tester Panel", callback_data="tester_menu")])
-    elif user_id == OWNER_ID:
-        keyboard.append([InlineKeyboardButton(text="👑 Admin Panel", callback_data="tester_menu")])
+    if user_id == OWNER_ID:
+        keyboard.append([InlineKeyboardButton(text="👑 Owner Panel", callback_data="owner_menu")])
+    elif user_id == HELPER_ID:
+        keyboard.append([InlineKeyboardButton(text="🛠 Helper Panel", callback_data="helper_menu")])
         
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -205,8 +201,12 @@ def get_back_keyboard():
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
-    args = message.text.split()
     
+    if is_user_banned(user_id):
+        await message.answer("⛔ Your account has been blocked.")
+        return
+        
+    args = message.text.split()
     referrer_id = None
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
@@ -219,12 +219,12 @@ async def cmd_start(message: Message, state: FSMContext):
     user_data = get_user(user_id)
     if not user_data:
         add_user(user_id, referrer_id)
-        if referrer_id:
-            update_referral_progress(referrer_id)
 
     status_tag = "STANDARD"
-    if user_id in (OWNER_ID, TESTER_ID):
-        status_tag = "DEVELOPER / TESTER"
+    if user_id == OWNER_ID:
+        status_tag = "OWNER"
+    elif user_id == HELPER_ID:
+        status_tag = "HELPER"
     elif is_user_premium(user_id):
         status_tag = "PREMIUM"
 
@@ -241,8 +241,10 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user_id = callback.from_user.id
     status_tag = "STANDARD"
-    if user_id in (OWNER_ID, TESTER_ID):
-        status_tag = "DEVELOPER / TESTER"
+    if user_id == OWNER_ID:
+        status_tag = "OWNER"
+    elif user_id == HELPER_ID:
+        status_tag = "HELPER"
     elif is_user_premium(user_id):
         status_tag = "PREMIUM"
 
@@ -255,58 +257,189 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_main_keyboard(user_id), parse_mode="HTML")
     await callback.answer()
 
-# --- TESTER / ADMIN PANEL ---
-@dp.callback_query(F.data == "tester_menu")
-async def tester_menu(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id not in (OWNER_ID, TESTER_ID):
+# --- OWNER PANEL ---
+@dp.callback_query(F.data == "owner_menu")
+async def owner_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    if callback.from_user.id != OWNER_ID:
         await callback.answer("⛔ Access denied.", show_alert=True)
         return
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚡ Activate Test Premium (7d)", callback_data="test_add_prem")],
+        [InlineKeyboardButton(text="📢 Broadcast", callback_data="own_broadcast"),
+         InlineKeyboardButton(text="👥 Users Stats", callback_data="own_stats")],
+        [InlineKeyboardButton(text="🔨 Ban User", callback_data="own_ban"),
+         InlineKeyboardButton(text="🔓 Unban User", callback_data="own_unban")],
+        [InlineKeyboardButton(text="⚡ Give Premium", callback_data="own_give_prem"),
+         InlineKeyboardButton(text="❌ Revoke Premium", callback_data="own_rem_prem")],
         [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
     ])
-    text = (
-        "<b>[ TESTER ENVIRONMENT ]</b>\n\n"
-        "Instant management of testing limits and multi-slot search access."
-    )
+    text = "<b>[ OWNER CONTROL PANEL ]</b>\n\nSelect an administration action:"
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
-@dp.callback_query(F.data == "test_add_prem")
-async def test_add_prem(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id not in (OWNER_ID, TESTER_ID):
+@dp.callback_query(F.data == "own_stats")
+async def owner_stats(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    today_count = get_users_count_today()
+    total_7d = get_users_count_by_days(7)
+    total_30d = get_users_count_by_days(30)
+    
+    text = (
+        "<b>[ USER STATISTICS ]</b>\n\n"
+        f"• Today (since start): <code>{today_count}</code>\n"
+        f"• Last 7 days: <code>{total_7d}</code>\n"
+        f"• Last 30 days: <code>{total_30d}</code>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← Owner Panel", callback_data="owner_menu")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+# Базові обробники розсилки та керування для Власника
+@dp.callback_query(F.data == "own_ban")
+async def own_ban_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID: return
+    await state.set_state(AdminStates.waiting_for_ban_id)
+    await callback.message.edit_text("<b>[ BAN USER ]</b>\n\nEnter User ID to ban:", reply_markup=get_back_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_ban_id, F.text)
+async def own_ban_process(message: Message, state: FSMContext):
+    try:
+        uid = int(message.text.strip())
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (uid,))
+        conn.commit()
+        conn.close()
+        await message.answer(f"✅ User <code>{uid}</code> has been banned.", parse_mode="HTML")
+    except ValueError:
+        await message.answer("⚠️ Invalid User ID.")
+    await state.clear()
+
+@dp.callback_query(F.data == "own_unban")
+async def own_unban_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID: return
+    await state.set_state(AdminStates.waiting_for_unban_id)
+    await callback.message.edit_text("<b>[ UNBAN USER ]</b>\n\nEnter User ID to unban:", reply_markup=get_back_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_unban_id, F.text)
+async def own_unban_process(message: Message, state: FSMContext):
+    try:
+        uid = int(message.text.strip())
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (uid,))
+        conn.commit()
+        conn.close()
+        await message.answer(f"✅ User <code>{uid}</code> has been unbanned.", parse_mode="HTML")
+    except ValueError:
+        await message.answer("⚠️ Invalid User ID.")
+    await state.clear()
+
+# --- HELPER PANEL ---
+@dp.callback_query(F.data == "helper_menu")
+async def helper_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    if callback.from_user.id != HELPER_ID:
+        await callback.answer("⛔ Access denied.", show_alert=True)
         return
     
-    conn = sqlite3.connect("bot_database.db")
-    cursor = conn.cursor()
-    new_prem = (datetime.datetime.now() + datetime.timedelta(days=7)).isoformat()
-    cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (new_prem, user_id))
-    conn.commit()
-    conn.close()
-    
-    await callback.answer("✅ Test Premium successfully activated for 7 days.", show_alert=True)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚡ Give Premium", callback_data="hlp_give_prem"),
+         InlineKeyboardButton(text="👥 Check Users Stats", callback_data="hlp_stats")],
+        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+    ])
+    text = "<b>[ HELPER CONTROL PANEL ]</b>\n\nSelect an action:"
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
 
-# --- SEARCH ENGINE (LENGTH SETUP) ---
+@dp.callback_query(F.data == "hlp_stats")
+async def helper_stats(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != HELPER_ID: return
+    await state.set_state(AdminStates.waiting_for_stats_days)
+    text = "<b>[ USERS STATS ]</b>\n\nEnter number of days to check user count (e.g., <code>1</code> for today, <code>7</code>, <code>30</code>):"
+    await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_stats_days, F.text)
+async def helper_stats_process(message: Message, state: FSMContext):
+    try:
+        days = int(message.text.strip())
+        if days == 1:
+            count = get_users_count_today()
+            label = "Today"
+        else:
+            count = get_users_count_by_days(days)
+            label = f"Last {days} days"
+        await message.answer(f"<b>[ STATS RESULT ]</b>\n{label}: <code>{count}</code> users.", parse_mode="HTML")
+    except ValueError:
+        await message.answer("⚠️ Invalid number.")
+    await state.clear()
+
+# Видача преміуму для Хелпера та Власника
+@dp.callback_query(F.data.in_({"own_give_prem", "hlp_give_prem"}))
+async def give_prem_start(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    if user_id not in (OWNER_ID, HELPER_ID): return
+    await state.set_state(AdminStates.waiting_for_prem_id)
+    await callback.message.edit_text("<b>[ GIVE PREMIUM ]</b>\n\nEnter User ID:", reply_markup=get_back_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_prem_id, F.text)
+async def give_prem_id_process(message: Message, state: FSMContext):
+    try:
+        uid = int(message.text.strip())
+        await state.update_data(target_uid=uid)
+        await state.set_state(AdminStates.waiting_for_prem_days)
+        await message.answer("Enter number of days for Premium:", parse_mode="HTML")
+    except ValueError:
+        await message.answer("⚠️ Invalid User ID.")
+        await state.clear()
+
+@dp.message(AdminStates.waiting_for_prem_days, F.text)
+async def give_prem_days_process(message: Message, state: FSMContext):
+    try:
+        days = int(message.text.strip())
+        data = await state.get_data()
+        uid = data.get("target_uid")
+        
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT premium_until FROM users WHERE user_id = ?", (uid,))
+        row = cursor.fetchone()
+        
+        now = datetime.datetime.now()
+        current_prem = datetime.datetime.fromisoformat(row[4]) if row and row[4] and datetime.datetime.fromisoformat(row[4]) > now else now
+        new_prem = current_prem + datetime.timedelta(days=days)
+        
+        cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (new_prem.isoformat(), uid))
+        conn.commit()
+        conn.close()
+        
+        await message.answer(f"✅ Premium successfully granted to <code>{uid}</code> for {days} days.", parse_mode="HTML")
+    except ValueError:
+        await message.answer("⚠️ Invalid days format.")
+    await state.clear()
+
+# --- SEARCH ENGINE (LENGTH 5 TO 9) ---
 @dp.callback_query(F.data == "start_search")
 async def search_step_length(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_length)
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="4", callback_data="len_4"),
-         InlineKeyboardButton(text="5", callback_data="len_5"),
+        [InlineKeyboardButton(text="5", callback_data="len_5"),
          InlineKeyboardButton(text="6", callback_data="len_6")],
         [InlineKeyboardButton(text="7", callback_data="len_7"),
          InlineKeyboardButton(text="8", callback_data="len_8"),
          InlineKeyboardButton(text="9", callback_data="len_9")],
-        [InlineKeyboardButton(text="10", callback_data="len_10"),
-         InlineKeyboardButton(text="11", callback_data="len_11"),
-         InlineKeyboardButton(text="12", callback_data="len_12")],
         [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
     ])
-    text = "<b>[ CONFIG // STEP 1 ]</b>\n\nSelect exact username length:"
+    text = "<b>[ CONFIG // STEP 1 ]</b>\n\nSelect exact username length (5 to 9):"
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
@@ -374,13 +507,22 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
         ])
 
     usernames_joined = "\n".join(result_lines)
-    mode_text = 'PREMIUM / TESTER (3 slots)' if is_prem else 'STANDARD (1 slot)'
+    mode_text = 'PREMIUM (3 slots)' if is_prem else 'STANDARD (1 slot)'
     
     result_text = (
         f"<b>[ SCAN RESULTS ]</b>\n\n"
         f"{usernames_joined}\n\n"
         f"Mode: <code>{mode_text}</code>"
     )
+
+    # 15% шанс випадіння випадкового промокоду при пошуку
+    promo_drop_text = ""
+    valid_codes = ["PREMIUM2026", "NEWBOTUSERNAME", "START", "SEARCHUSERNAME"]
+    if random.random() < 0.15:
+        dropped_code = random.choice(valid_codes)
+        promo_drop_text = f"\n\n🎁 <b>Lucky Drop!</b> You found a hidden promo code: <code>{dropped_code}</code>\nActivate it in the Premium menu."
+
+    result_text += promo_drop_text
 
     keyboard_buttons.append([InlineKeyboardButton(text="🔄 Search Again", callback_data="start_search")])
     keyboard_buttons.append([InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")])
@@ -390,65 +532,6 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(result_text, reply_markup=result_keyboard, parse_mode="HTML")
     await state.clear()
     await callback.answer()
-
-# --- DIRECT CHECK ---
-@dp.callback_query(F.data == "start_check")
-async def start_custom_check(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(CheckStates.waiting_for_username)
-    text = (
-        "<b>[ DIRECT CHECK ]</b>\n\n"
-        "Send username to check (e.g., <code>durov</code> or <code>@telegram</code>):"
-    )
-    await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@dp.message(CheckStates.waiting_for_username, F.text)
-async def process_custom_check(message: Message, state: FSMContext):
-    raw_text = message.text.strip()
-    username = raw_text.lstrip("@").strip()
-    
-    if len(username) < 5:
-        await message.answer("⚠️ Minimum username length is 5 characters.")
-        return
-
-    user_id = message.from_user.id
-    processing_msg = await message.answer(f"<b>[ CHECKING ]</b> <code>@{username}</code>...", parse_mode="HTML")
-
-    try:
-        chat = await bot.get_chat(f"@{username}")
-        chat_type = chat.type
-        title_name = chat.title or chat.full_name or "Unknown"
-        
-        result_text = (
-            f"<b>[ CHECK RESULT ]</b>\n\n"
-            f"Tag: <code>@{username}</code>\n"
-            f"Status: <b>Taken ❌</b>\n"
-            f"Type: <code>{chat_type}</code>\n"
-            f"Name: <b>{title_name}</b>"
-        )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"🔗 Open", url=f"https://t.me/{username}")],
-            [InlineKeyboardButton(text=f"💾 Save", callback_data=f"save_{username}")],
-            [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
-        ])
-    except TelegramBadRequest:
-        add_to_history(user_id, username)
-        result_text = (
-            f"<b>[ CHECK RESULT ]</b>\n\n"
-            f"Tag: <code>@{username}</code>\n"
-            f"Status: <b>Available / Not Found ✅</b>"
-        )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"🔗 Open", url=f"https://t.me/{username}")],
-            [InlineKeyboardButton(text=f"💾 Save", callback_data=f"save_{username}")],
-            [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
-        ])
-    except Exception:
-        result_text = f"⚠️ Error checking <code>@{username}</code>."
-        keyboard = get_back_keyboard()
-
-    await processing_msg.edit_text(result_text, reply_markup=keyboard, parse_mode="HTML")
-    await state.clear()
 
 # --- SAVED TAGS & HISTORY ---
 @dp.callback_query(F.data == "menu_saved")
@@ -489,42 +572,82 @@ async def show_history(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
 
+# --- PREMIUM & PROMO CODES SYSTEM ---
 @dp.callback_query(F.data == "menu_premium")
 async def show_premium_info(callback: CallbackQuery):
     user_id = callback.from_user.id
     user_data = get_user(user_id)
-    
-    ref_count = user_data[2] if user_data else 0
-    total_invited = user_data[3] if user_data else 0
     prem_until_str = user_data[4] if user_data else None
     
     prem_status = "Inactive ❌"
-    if user_id in (OWNER_ID, TESTER_ID):
-        prem_status = "Active (Developer / Tester 👑) ✅"
+    if user_id == OWNER_ID:
+        prem_status = "Active (Owner 👑) ✅"
+    elif user_id == HELPER_ID:
+        prem_status = "Active (Helper 🛠) ✅"
     elif prem_until_str:
         prem_date = datetime.datetime.fromisoformat(prem_until_str)
         if prem_date > datetime.datetime.now():
             prem_status = f"Active until {prem_date.strftime('%d.%m %H:%M')} ✅"
 
-    bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
-
     text = (
-        "<b>[ PREMIUM & REFERRAL SYSTEM ]</b>\n\n"
-        f"Status: <b>{prem_status}</b>\n"
-        f"Referral Progress: <code>{ref_count}/5</code>\n"
-        f"Total Invited: <code>{total_invited}</code>\n\n"
-        "<b>Perks:</b> Scan up to 3 available usernames simultaneously.\n\n"
-        "<b>Milestones:</b>\n"
-        "• 2 referrals → +1 day Premium\n"
-        "• 3 referrals → +3 days Premium\n"
-        "• 5 referrals → +7 days Premium (resets progress)\n\n"
-        "<b>Your invite link:</b>\n"
-        f"<code>{ref_link}</code>"
+        "<b>[ PREMIUM SYSTEM ]</b>\n\n"
+        f"Status: <b>{prem_status}</b>\n\n"
+        "<b>Perks:</b> Scan up to 3 available usernames simultaneously (5-9 characters).\n\n"
+        "💡 Have a promo code? Enter it to get +1 day of Premium per code!"
     )
-    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Activate Promo Code", callback_data="enter_promo")],
+        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(F.data == "enter_promo")
+async def enter_promo_start(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_for_code_input)
+    text = "<b>[ PROMO CODE ]</b>\n\nSend your promo code in chat:"
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
+
+@dp.message(AdminStates.waiting_for_code_input, F.text)
+async def process_promo_code(message: Message, state: FSMContext):
+    code_input = message.text.strip().upper()
+    user_id = message.from_user.id
+    
+    valid_codes = ["PREMIUM2026", "NEWBOTUSERNAME", "START", "SEARCHUSERNAME"]
+    
+    if code_input not in valid_codes:
+        await message.answer("❌ Invalid promo code.")
+        await state.clear()
+        return
+
+    conn = sqlite3.connect("bot_database.db")
+    cursor = conn.cursor()
+    
+    # Перевіряємо чи користувач вже активував цей конкретний код
+    cursor.execute("SELECT 1 FROM used_codes WHERE user_id = ? AND code = ?", (user_id, code_input))
+    if cursor.fetchone():
+        conn.close()
+        await message.answer("⚠️ You have already used this promo code.")
+        await state.clear()
+        return
+
+    # Записуємо активацію коду
+    cursor.execute("INSERT INTO used_codes (user_id, code) VALUES (?, ?)", (user_id, code_input))
+    
+    # Додаємо +1 день преміуму
+    cursor.execute("SELECT premium_until FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    now = datetime.datetime.now()
+    current_prem = datetime.datetime.fromisoformat(row[4]) if row and row[4] and datetime.datetime.fromisoformat(row[4]) > now else now
+    new_prem = current_prem + datetime.timedelta(days=1)
+    
+    cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (new_prem.isoformat(), user_id))
+    conn.commit()
+    conn.close()
+
+    await message.answer(f"✅ Success! Promo code <code>{code_input}</code> activated. +1 day of Premium added.", parse_mode="HTML")
+    await state.clear()
 
 async def main():
     init_db()
