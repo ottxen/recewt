@@ -486,7 +486,7 @@ async def search_step_digits(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
-@@dp.callback_query(F.data.startswith("dig_"))
+@dp.callback_query(F.data.startswith("dig_"))
 async def process_username_search(callback: CallbackQuery, state: FSMContext):
     use_digits = (callback.data == "dig_yes")
     data = await state.get_data()
