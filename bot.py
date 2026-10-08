@@ -450,7 +450,7 @@ async def give_prem_days_process(message: Message, state: FSMContext):
         await message.answer("⚠️ Invalid days format.")
     await state.clear()
 
-# --- SEARCH ENGINE (ВИПРАВЛЕНИЙ ПОШУК ТІЛЬКИ ВІЛЬНИХ ТЕГІВ) ---
+# --- SEARCH ENGINE ---
 @dp.callback_query(F.data == "start_search")
 async def search_step_length(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_length)
@@ -497,7 +497,7 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     found_usernames = []
     chars = string.ascii_lowercase + (string.digits if use_digits else "")
     
-        attempts = 0
+    attempts = 0
     while len(found_usernames) < limit and attempts < 80:
         attempts += 1
         uname = "".join(random.choices(chars, k=length))
@@ -684,4 +684,3 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
-        
