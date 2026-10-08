@@ -68,7 +68,6 @@ def init_db():
             saved_at TEXT
         )
     """)
-    # Таблиця активованих промокодів користувача
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS used_codes (
             user_id INTEGER,
@@ -298,7 +297,6 @@ async def owner_stats(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
-# Базові обробники розсилки та керування для Власника
 @dp.callback_query(F.data == "own_ban")
 async def own_ban_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != OWNER_ID: return
@@ -337,6 +335,30 @@ async def own_unban_process(message: Message, state: FSMContext):
         conn.commit()
         conn.close()
         await message.answer(f"✅ User <code>{uid}</code> has been unbanned.", parse_mode="HTML")
+    except ValueError:
+        await message.answer("⚠️ Invalid User ID.")
+    await state.clear()
+
+# --- REVOKE PREMIUM (Зняття преміуму для власника) ---
+@dp.callback_query(F.data == "own_rem_prem")
+async def own_rem_prem_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != OWNER_ID: return
+    await state.set_state(AdminStates.waiting_for_rem_prem_id)
+    await callback.message.edit_text("<b>[ REVOKE PREMIUM ]</b>\n\nEnter User ID to remove premium:", reply_markup=get_back_keyboard(), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_rem_prem_id, F.text)
+async def own_rem_prem_process(message: Message, state: FSMContext):
+    try:
+        uid = int(message.text.strip())
+        conn = sqlite3.connect("bot_database.db")
+        cursor = conn.cursor()
+        # Встановлюємо дату преміуму в минуле, щоб він одразу згас
+        expired_date = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
+        cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (expired_date, uid))
+        conn.commit()
+        conn.close()
+        await message.answer(f"✅ Premium successfully revoked from user <code>{uid}</code>.", parse_mode="HTML")
     except ValueError:
         await message.answer("⚠️ Invalid User ID.")
     await state.clear()
@@ -417,7 +439,13 @@ async def give_prem_days_process(message: Message, state: FSMContext):
         current_prem = datetime.datetime.fromisoformat(row[4]) if row and row[4] and datetime.datetime.fromisoformat(row[4]) > now else now
         new_prem = current_prem + datetime.timedelta(days=days)
         
-        cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (new_prem.isoformat(), uid))
+        # Якщо користувача ще чомусь немає в базі таблиці users, додамо його превентивно
+        if not row:
+            cursor.execute("INSERT OR IGNORE INTO users (user_id, premium_until, joined_date) VALUES (?, ?, ?)", 
+                           (uid, new_prem.isoformat(), now.isoformat()))
+        else:
+            cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (new_prem.isoformat(), uid))
+            
         conn.commit()
         conn.close()
         
@@ -426,7 +454,7 @@ async def give_prem_days_process(message: Message, state: FSMContext):
         await message.answer("⚠️ Invalid days format.")
     await state.clear()
 
-# --- SEARCH ENGINE (LENGTH 5 TO 9) ---
+# --- SEARCH ENGINE (LENGTH 5 TO 9 З ФІЛЬТРОМ ЖИВИХ АКАУНТІВ) ---
 @dp.callback_query(F.data == "start_search")
 async def search_step_length(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_length)
@@ -468,13 +496,13 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     is_prem = is_user_premium(user_id)
     limit = 3 if is_prem else 1
 
-    await callback.message.edit_text("<b>[ SCANNING ]</b>\nQuerying Telegram network...", parse_mode="HTML")
+        await callback.message.edit_text("<b>[ SCANNING ]</b>\nQuerying Telegram network and filtering occupied profiles...", parse_mode="HTML")
     
     found_usernames = []
     chars = string.ascii_lowercase + (string.digits if use_digits else "")
     
     attempts = 0
-    while len(found_usernames) < limit and attempts < 45:
+    while len(found_usernames) < limit and attempts < 60:
         attempts += 1
         uname = "".join(random.choices(chars, k=length))
         
@@ -482,13 +510,21 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
             continue
             
         try:
-            await bot.get_chat(f"@{uname}")
+            chat = await bot.get_chat(f"@{uname}")
+            # Якщо get_chat успішний — перевіримо, чи це часом не закинутий/порожній об'єкт, 
+            # але зазвичай живі користувачі/канали мають тип "private", "supergroup", "channel" і активне ім'я.
+            # Якщо чат існує і має назву або реального власника — пропускаємо його (він не вільний).
+            # Фільтруємо все, що має валідний тип і не є повністю порожнім технічним слотом.
+            if chat and chat.type:
+                continue
         except TelegramBadRequest:
+            # Якщо виникла помилка TelegramBadRequest — це означає, що такого юзернейму НЕ ІСНУЄ в базі Telegram.
+            # Тобто він повністю вільний для реєстрації!
             if uname not in found_usernames:
                 found_usernames.append(uname)
         except Exception:
             pass
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.03)
 
     if not found_usernames:
         text = "<b>[ ⚠️ RESULT ]</b>\n\nNo available tags found with these parameters. Try different settings."
@@ -624,7 +660,6 @@ async def process_promo_code(message: Message, state: FSMContext):
     conn = sqlite3.connect("bot_database.db")
     cursor = conn.cursor()
     
-    # Перевіряємо чи користувач вже активував цей конкретний код
     cursor.execute("SELECT 1 FROM used_codes WHERE user_id = ? AND code = ?", (user_id, code_input))
     if cursor.fetchone():
         conn.close()
@@ -632,10 +667,8 @@ async def process_promo_code(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Записуємо активацію коду
     cursor.execute("INSERT INTO used_codes (user_id, code) VALUES (?, ?)", (user_id, code_input))
     
-    # Додаємо +1 день преміуму
     cursor.execute("SELECT premium_until FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     now = datetime.datetime.now()
