@@ -27,15 +27,16 @@ class SearchStates(StatesGroup):
     waiting_for_length = State()
     waiting_for_digits = State()
 
+class PromoStates(StatesGroup):
+    waiting_for_code = State()
+
 class AdminStates(StatesGroup):
-    waiting_for_broadcast = State()
     waiting_for_ban_id = State()
     waiting_for_unban_id = State()
     waiting_for_prem_id = State()
     waiting_for_prem_days = State()
     waiting_for_rem_prem_id = State()
     waiting_for_stats_days = State()
-    waiting_for_code_input = State()
 
 # --- DATABASE SETUP ---
 def init_db():
@@ -202,8 +203,7 @@ async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     
     if is_user_banned(user_id):
-        aws_msg = "⛔ Your account has been blocked."
-        await message.answer(aws_msg)
+        await message.answer("⛔ Your account has been blocked.")
         return
         
     args = message.text.split()
@@ -352,7 +352,8 @@ async def own_rem_prem_process(message: Message, state: FSMContext):
         uid = int(message.text.strip())
         conn = sqlite3.connect("bot_database.db")
         cursor = conn.cursor()
-        expired_date = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
+        # Повністю скидаємо дату преміуму на поточний час, щоб він одразу деактивувався
+        expired_date = datetime.datetime.now().isoformat()
         cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (expired_date, uid))
         conn.commit()
         conn.close()
@@ -450,7 +451,7 @@ async def give_prem_days_process(message: Message, state: FSMContext):
         await message.answer("⚠️ Invalid days format.")
     await state.clear()
 
-# --- SEARCH ENGINE ---
+# --- SEARCH ENGINE (Fixed to avoid taken usernames) ---
 @dp.callback_query(F.data == "start_search")
 async def search_step_length(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_length)
@@ -497,8 +498,8 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     found_usernames = []
     chars = string.ascii_lowercase + (string.digits if use_digits else "")
     
-    attempts = 0
-    while len(found_usernames) < limit and attempts < 80:
+            attempts = 0
+    while len(found_usernames) < limit and attempts < 120:
         attempts += 1
         uname = "".join(random.choices(chars, k=length))
         
@@ -506,10 +507,12 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
             continue
             
         try:
+            # Надійна перевірка: якщо метод НЕ падає з помилкою відсутності чату, 
+            # значить цей юзернейм ЗАЙНЯТИЙ або зарезервований системно!
             await bot.get_chat(f"@{uname}")
         except TelegramBadRequest as e:
             err_msg = str(e).lower()
-            if "chat not found" in err_msg or "username not found" in err_msg:
+            if "chat not found" in err_msg or "username not found" in err_msg or "not valid" in err_msg:
                 if uname not in found_usernames:
                     found_usernames.append(uname)
         except Exception:
@@ -597,7 +600,7 @@ async def show_history(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
 
-# --- PREMIUM & PROMO CODES SYSTEM ---
+# --- PREMIUM & PROMO CODES SYSTEM (Fixed Input & English Response) ---
 @dp.callback_query(F.data == "menu_premium")
 async def show_premium_info(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -629,20 +632,25 @@ async def show_premium_info(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "enter_promo")
 async def enter_promo_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_for_code_input)
+    await state.set_state(PromoStates.waiting_for_code)
     text = "<b>[ PROMO CODE ]</b>\n\nSend your promo code in chat:"
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
 
-@dp.message(AdminStates.waiting_for_code_input, F.text)
+@dp.message(PromoStates.waiting_for_code, F.text)
 async def process_promo_code(message: Message, state: FSMContext):
     code_input = message.text.strip().upper()
     user_id = message.from_user.id
     
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    
     valid_codes = ["PREMIUM2026", "NEWBOTUSERNAME", "START", "SEARCHUSERNAME"]
     
     if code_input not in valid_codes:
-        await message.answer("❌ Invalid promo code.")
+        await message.answer("❌ Invalid promo code. Try again or return to menu.")
         await state.clear()
         return
 
@@ -668,7 +676,12 @@ async def process_promo_code(message: Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    await message.answer(f"✅ Success! Promo code <code>{code_input}</code> activated. +1 day added.", parse_mode="HTML")
+    await message.answer(
+        f"✅ <b>Successfully activated!</b>\n"
+        f"Promo code <code>{code_input}</code> applied.\n"
+        f"Your Premium will expire in 23 hours (1 day added).", 
+        parse_mode="HTML"
+    )
     await state.clear()
 
 async def main():
@@ -684,3 +697,4 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
+        
