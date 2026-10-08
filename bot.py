@@ -498,7 +498,7 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     found_usernames = []
     chars = string.ascii_lowercase + (string.digits if use_digits else "")
     
-            attempts = 0
+    attempts = 0
     while len(found_usernames) < limit and attempts < 120:
         attempts += 1
         uname = "".join(random.choices(chars, k=length))
@@ -507,8 +507,6 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
             continue
             
         try:
-            # Надійна перевірка: якщо метод НЕ падає з помилкою відсутності чату, 
-            # значить цей юзернейм ЗАЙНЯТИЙ або зарезервований системно!
             await bot.get_chat(f"@{uname}")
         except TelegramBadRequest as e:
             err_msg = str(e).lower()
