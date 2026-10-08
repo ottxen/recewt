@@ -177,10 +177,10 @@ def get_users_count_today():
 # --- KEYBOARDS ---
 def get_main_keyboard(user_id: int):
     keyboard = [
-        [InlineKeyboardButton(text="🔍 Tag Search", callback_data="start_search")],
+        [InlineKeyboardButton(text="🔍 Scan Usernames", callback_data="start_search")],
         [InlineKeyboardButton(text="💾 Saved Tags", callback_data="menu_saved"),
          InlineKeyboardButton(text="📜 History", callback_data="menu_history")],
-        [InlineKeyboardButton(text="💎 Premium & Status", callback_data="menu_premium")]
+        [InlineKeyboardButton(text="💎 Premium Status", callback_data="menu_premium")]
     ]
     
     if user_id == OWNER_ID:
@@ -202,7 +202,8 @@ async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     
     if is_user_banned(user_id):
-        await message.answer("⛔ Your account has been blocked.")
+        aws_msg = "⛔ Your account has been blocked."
+        await message.answer(aws_msg)
         return
         
     args = message.text.split()
@@ -228,10 +229,10 @@ async def cmd_start(message: Message, state: FSMContext):
         status_tag = "PREMIUM"
 
     text = (
-        f"<b>[ TAGPULSE // SYSTEM ]</b>\n"
+        f"<b>[ 🐈 USER SCOUT // SYSTEM ]</b>\n"
         f"Status: <code>{status_tag}</code>\n\n"
-        "<i>Network username tracker & generator.</i>\n"
-        "Select an option below:"
+        "<i>Smart Telegram username scout & checker.</i>\n"
+        "Choose an option below:"
     )
     await message.answer(text, reply_markup=get_main_keyboard(user_id), parse_mode="HTML")
 
@@ -248,10 +249,10 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
         status_tag = "PREMIUM"
 
     text = (
-        f"<b>[ TAGPULSE // SYSTEM ]</b>\n"
+        f"<b>[ 🐈 USER SCOUT // SYSTEM ]</b>\n"
         f"Status: <code>{status_tag}</code>\n\n"
-        "<i>Network username tracker & generator.</i>\n"
-        "Select an option below:"
+        "<i>Smart Telegram username scout & checker.</i>\n"
+        "Choose an option below:"
     )
     await callback.message.edit_text(text, reply_markup=get_main_keyboard(user_id), parse_mode="HTML")
     await callback.answer()
@@ -265,8 +266,7 @@ async def owner_menu(callback: CallbackQuery, state: FSMContext):
         return
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Broadcast", callback_data="own_broadcast"),
-         InlineKeyboardButton(text="👥 Users Stats", callback_data="own_stats")],
+        [InlineKeyboardButton(text="👥 Users Stats", callback_data="own_stats")],
         [InlineKeyboardButton(text="🔨 Ban User", callback_data="own_ban"),
          InlineKeyboardButton(text="🔓 Unban User", callback_data="own_unban")],
         [InlineKeyboardButton(text="⚡ Give Premium", callback_data="own_give_prem"),
@@ -287,7 +287,7 @@ async def owner_stats(callback: CallbackQuery):
     
     text = (
         "<b>[ USER STATISTICS ]</b>\n\n"
-        f"• Today (since start): <code>{today_count}</code>\n"
+        f"• Today: <code>{today_count}</code>\n"
         f"• Last 7 days: <code>{total_7d}</code>\n"
         f"• Last 30 days: <code>{total_30d}</code>"
     )
@@ -339,7 +339,6 @@ async def own_unban_process(message: Message, state: FSMContext):
         await message.answer("⚠️ Invalid User ID.")
     await state.clear()
 
-# --- REVOKE PREMIUM (Зняття преміуму для власника) ---
 @dp.callback_query(F.data == "own_rem_prem")
 async def own_rem_prem_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != OWNER_ID: return
@@ -353,7 +352,6 @@ async def own_rem_prem_process(message: Message, state: FSMContext):
         uid = int(message.text.strip())
         conn = sqlite3.connect("bot_database.db")
         cursor = conn.cursor()
-        # Встановлюємо дату преміуму в минуле, щоб він одразу згас
         expired_date = (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat()
         cursor.execute("UPDATE users SET premium_until = ? WHERE user_id = ?", (expired_date, uid))
         conn.commit()
@@ -373,7 +371,7 @@ async def helper_menu(callback: CallbackQuery, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡ Give Premium", callback_data="hlp_give_prem"),
-         InlineKeyboardButton(text="👥 Check Users Stats", callback_data="hlp_stats")],
+         InlineKeyboardButton(text="👥 Check Stats", callback_data="hlp_stats")],
         [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
     ])
     text = "<b>[ HELPER CONTROL PANEL ]</b>\n\nSelect an action:"
@@ -384,7 +382,7 @@ async def helper_menu(callback: CallbackQuery, state: FSMContext):
 async def helper_stats(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != HELPER_ID: return
     await state.set_state(AdminStates.waiting_for_stats_days)
-    text = "<b>[ USERS STATS ]</b>\n\nEnter number of days to check user count (e.g., <code>1</code> for today, <code>7</code>, <code>30</code>):"
+    text = "<b>[ USERS STATS ]</b>\n\nEnter number of days (e.g., <code>1</code>, <code>7</code>, <code>30</code>):"
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
 
@@ -403,7 +401,6 @@ async def helper_stats_process(message: Message, state: FSMContext):
         await message.answer("⚠️ Invalid number.")
     await state.clear()
 
-# Видача преміуму для Хелпера та Власника
 @dp.callback_query(F.data.in_({"own_give_prem", "hlp_give_prem"}))
 async def give_prem_start(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -439,7 +436,6 @@ async def give_prem_days_process(message: Message, state: FSMContext):
         current_prem = datetime.datetime.fromisoformat(row[4]) if row and row[4] and datetime.datetime.fromisoformat(row[4]) > now else now
         new_prem = current_prem + datetime.timedelta(days=days)
         
-        # Якщо користувача ще чомусь немає в базі таблиці users, додамо його превентивно
         if not row:
             cursor.execute("INSERT OR IGNORE INTO users (user_id, premium_until, joined_date) VALUES (?, ?, ?)", 
                            (uid, new_prem.isoformat(), now.isoformat()))
@@ -454,7 +450,7 @@ async def give_prem_days_process(message: Message, state: FSMContext):
         await message.answer("⚠️ Invalid days format.")
     await state.clear()
 
-# --- SEARCH ENGINE (LENGTH 5 TO 9 З ФІЛЬТРОМ ЖИВИХ АКАУНТІВ) ---
+# --- SEARCH ENGINE (ВИПРАВЛЕНИЙ ПОШУК ТІЛЬКИ ВІЛЬНИХ ТЕГІВ) ---
 @dp.callback_query(F.data == "start_search")
 async def search_step_length(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_length)
@@ -467,7 +463,7 @@ async def search_step_length(callback: CallbackQuery, state: FSMContext):
          InlineKeyboardButton(text="9", callback_data="len_9")],
         [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
     ])
-    text = "<b>[ CONFIG // STEP 1 ]</b>\n\nSelect exact username length (5 to 9):"
+    text = "<b>[ SCOUT // STEP 1 ]</b>\n\nSelect exact username length (5 to 9):"
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
@@ -482,7 +478,7 @@ async def search_step_digits(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="Letters only (e.g. tag)", callback_data="dig_no")],
         [InlineKeyboardButton(text="← Back", callback_data="start_search")]
     ])
-    text = f"<b>[ CONFIG // STEP 2 ]</b>\n\nLength: <b>{length} characters</b>.\nInclude digits?"
+    text = f"<b>[ SCOUT // STEP 2 ]</b>\n\nLength: <b>{length} characters</b>.\nInclude digits?"
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
@@ -496,13 +492,13 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     is_prem = is_user_premium(user_id)
     limit = 3 if is_prem else 1
 
-    await callback.message.edit_text("<b>[ SCANNING ]</b>\nQuerying Telegram network and filtering occupied profiles...", parse_mode="HTML")
+    await callback.message.edit_text("<b>[ 🐈 SCOUTING ]</b>\nScanning Telegram network for truly available tags...", parse_mode="HTML")
     
     found_usernames = []
     chars = string.ascii_lowercase + (string.digits if use_digits else "")
     
-    attempts = 0
-    while len(found_usernames) < limit and attempts < 60:
+        attempts = 0
+    while len(found_usernames) < limit and attempts < 80:
         attempts += 1
         uname = "".join(random.choices(chars, k=length))
         
@@ -510,18 +506,18 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
             continue
             
         try:
-            chat = await bot.get_chat(f"@{uname}")
-            if chat and chat.type:
-                continue
-        except TelegramBadRequest:
-            if uname not in found_usernames:
-                found_usernames.append(uname)
+            await bot.get_chat(f"@{uname}")
+        except TelegramBadRequest as e:
+            err_msg = str(e).lower()
+            if "chat not found" in err_msg or "username not found" in err_msg:
+                if uname not in found_usernames:
+                    found_usernames.append(uname)
         except Exception:
             pass
-        await asyncio.sleep(0.03)
+        await asyncio.sleep(0.02)
 
     if not found_usernames:
-        text = "<b>[ ⚠️ RESULT ]</b>\n\nNo available tags found with these parameters. Try different settings."
+        text = "<b>[ ⚠️ RESULT ]</b>\n\nNo available tags found. Try different settings."
         await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
         return
 
@@ -540,7 +536,7 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     mode_text = 'PREMIUM (3 slots)' if is_prem else 'STANDARD (1 slot)'
     
     result_text = (
-        f"<b>[ SCAN RESULTS ]</b>\n\n"
+        f"<b>[ 🐈 SCOUT RESULTS ]</b>\n\n"
         f"{usernames_joined}\n\n"
         f"Mode: <code>{mode_text}</code>"
     )
@@ -553,7 +549,7 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
 
     result_text += promo_drop_text
 
-    keyboard_buttons.append([InlineKeyboardButton(text="🔄 Search Again", callback_data="start_search")])
+    keyboard_buttons.append([InlineKeyboardButton(text="🔄 Scout Again", callback_data="start_search")])
     keyboard_buttons.append([InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")])
     
     result_keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
@@ -569,7 +565,7 @@ async def show_saved_tags(callback: CallbackQuery):
     rows = get_saved_tags(user_id)
     
     if not rows:
-        text = "<b>[ SAVED TAGS ]</b>\n\nYou have no saved tags. Click 'Save' during scans."
+        text = "<b>[ SAVED TAGS ]</b>\n\nYou have no saved tags."
     else:
         list_str = "\n".join([f"• <code>@{item[0]}</code> — <i>{item[1]}</i>" for item in rows])
         text = f"<b>[ SAVED TAGS ]</b>\n\n{list_str}"
@@ -583,9 +579,9 @@ async def save_tag_callback(callback: CallbackQuery):
     uname = callback.data.replace("save_", "")
     is_saved = save_tag_to_db(user_id, uname)
     if is_saved:
-        await callback.answer(f"✅ @{uname} successfully saved to profile.", show_alert=True)
+        await callback.answer(f"✅ @{uname} successfully saved.", show_alert=True)
     else:
-        await callback.answer(f"⚠️ @{uname} is already in your list.", show_alert=True)
+        await callback.answer(f"⚠️ @{uname} is already saved.", show_alert=True)
 
 @dp.callback_query(F.data == "menu_history")
 async def show_history(callback: CallbackQuery):
@@ -621,8 +617,8 @@ async def show_premium_info(callback: CallbackQuery):
     text = (
         "<b>[ PREMIUM SYSTEM ]</b>\n\n"
         f"Status: <b>{prem_status}</b>\n\n"
-        "<b>Perks:</b> Scan up to 3 available usernames simultaneously (5-9 characters).\n\n"
-        "💡 Have a promo code? Enter it to get +1 day of Premium per code!"
+        "<b>Perks:</b> Scan up to 3 available usernames simultaneously.\n\n"
+        "💡 Have a promo code? Enter it to get +1 day of Premium!"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔑 Activate Promo Code", callback_data="enter_promo")],
@@ -672,13 +668,13 @@ async def process_promo_code(message: Message, state: FSMContext):
     conn.commit()
     conn.close()
 
-    await message.answer(f"✅ Success! Promo code <code>{code_input}</code> activated. +1 day of Premium added.", parse_mode="HTML")
+    await message.answer(f"✅ Success! Promo code <code>{code_input}</code> activated. +1 day added.", parse_mode="HTML")
     await state.clear()
 
 async def main():
     init_db()
     logging.basicConfig(level=logging.INFO)
-    print("TagPulse Dark Cat Edition is online!")
+    print("User Scout (Cat Edition) is online!")
     try:
         await dp.start_polling(bot)
     finally:
@@ -688,3 +684,4 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
+        
