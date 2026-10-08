@@ -486,7 +486,7 @@ async def search_step_digits(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("dig_"))
+@@dp.callback_query(F.data.startswith("dig_"))
 async def process_username_search(callback: CallbackQuery, state: FSMContext):
     use_digits = (callback.data == "dig_yes")
     data = await state.get_data()
@@ -496,7 +496,7 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
     is_prem = is_user_premium(user_id)
     limit = 3 if is_prem else 1
 
-        await callback.message.edit_text("<b>[ SCANNING ]</b>\nQuerying Telegram network and filtering occupied profiles...", parse_mode="HTML")
+    await callback.message.edit_text("<b>[ SCANNING ]</b>\nQuerying Telegram network and filtering occupied profiles...", parse_mode="HTML")
     
     found_usernames = []
     chars = string.ascii_lowercase + (string.digits if use_digits else "")
@@ -511,15 +511,9 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
             
         try:
             chat = await bot.get_chat(f"@{uname}")
-            # Якщо get_chat успішний — перевіримо, чи це часом не закинутий/порожній об'єкт, 
-            # але зазвичай живі користувачі/канали мають тип "private", "supergroup", "channel" і активне ім'я.
-            # Якщо чат існує і має назву або реального власника — пропускаємо його (він не вільний).
-            # Фільтруємо все, що має валідний тип і не є повністю порожнім технічним слотом.
             if chat and chat.type:
                 continue
         except TelegramBadRequest:
-            # Якщо виникла помилка TelegramBadRequest — це означає, що такого юзернейму НЕ ІСНУЄ в базі Telegram.
-            # Тобто він повністю вільний для реєстрації!
             if uname not in found_usernames:
                 found_usernames.append(uname)
         except Exception:
@@ -551,7 +545,6 @@ async def process_username_search(callback: CallbackQuery, state: FSMContext):
         f"Mode: <code>{mode_text}</code>"
     )
 
-    # 15% шанс випадіння випадкового промокоду при пошуку
     promo_drop_text = ""
     valid_codes = ["PREMIUM2026", "NEWBOTUSERNAME", "START", "SEARCHUSERNAME"]
     if random.random() < 0.15:
