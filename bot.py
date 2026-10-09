@@ -15,14 +15,42 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-
-# Вбудований у OpenCV детектор QR-кодів (не потребує сторонніх системних бібліотек)
 import cv2
 
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# --- DATABASE SETUP ---
+def init_db():
+    conn = sqlite3.connect("secur3ty.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS saved_passwords (
+            user_id INTEGER,
+            password TEXT,
+            saved_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_password_db(user_id: int, password: str):
+    conn = sqlite3.connect("secur3ty.db")
+    cursor = conn.cursor()
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    cursor.execute("INSERT INTO saved_passwords (user_id, password, saved_at) VALUES (?, ?, ?)", (user_id, password, now))
+    conn.commit()
+    conn.close()
+
+def get_saved_passwords_db(user_id: int):
+    conn = sqlite3.connect("secur3ty.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT password, saved_at FROM saved_passwords WHERE user_id = ? ORDER BY rowid DESC LIMIT 15", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 # --- FSM STATES ---
 class ToolStates(StatesGroup):
@@ -34,7 +62,7 @@ def get_main_menu():
         [InlineKeyboardButton(text="🔗 Check URL Safety", callback_data="tool_url"),
          InlineKeyboardButton(text="📷 Scan QR Code", callback_data="tool_qr")],
         [InlineKeyboardButton(text="🛡 File Inspector", callback_data="tool_file"),
-         InlineKeyboardButton(text="🔑 Password Generator", callback_data="tool_pass")],
+         InlineKeyboardButton(text="🔑 Password Manager", callback_data="tool_pass")],
         [InlineKeyboardButton(text="ℹ️ About secur3tybot", callback_data="tool_about")]
     ])
 
@@ -72,7 +100,7 @@ async def about_bot(callback: CallbackQuery):
         "• URL safety & tracker removal\n"
         "• QR code scanner & decoder\n"
         "• File extension & metadata inspector\n"
-        "• Secure password generator\n\n"
+        "• Secure password manager & generator\n\n"
         "<i>Stay safe online.</i>"
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
@@ -108,7 +136,7 @@ async def process_url_check(message: Message, state: FSMContext):
         f"<b>Details:</b>\n"
         f"• Protocol: <code>{'HTTPS (Secure)' if 'https://' in parsed_lower else 'HTTP (Insecure ⚠️)'}</code>\n"
         f"• Clean URL (No Trackers): <code>{clean_url}</code>\n\n"
-        f"<i>Tip: Always verify the exact domain spelling before entering personal data.</i>"
+        f"<i>Tip: Always verify exact domain spelling before entering data.</i>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -119,13 +147,13 @@ async def process_url_check(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.clear()
 
-# --- 2. QR CODE SCANNER (PHOTO INPUT) ---
+# --- 2. QR CODE SCANNER ---
 @dp.callback_query(F.data == "tool_qr")
 async def qr_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
         "<b>[ 📷 QR CODE SCANNER ]</b>\n\n"
-        "Send an image containing a QR code as a **Photo**, and I will decode and check it instantly."
+        "Send an image containing a QR code as a **Photo**, and I will decode it instantly."
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -151,7 +179,7 @@ async def process_qr_photo(message: Message):
             text = (
                 f"<b>[ ✅ QR CODE DECODED ]</b>\n\n"
                 f"Content found:\n<code>{qr_data}</code>\n\n"
-                f"<i>If this is a website link, make sure to verify its safety before opening!</i>"
+                f"<i>Verify safety before opening any links!</i>"
             )
     except Exception:
         text = "<b>[ ❌ ERROR ]</b>\n\nCould not process the image. Please try another one."
@@ -170,7 +198,7 @@ async def file_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
         "<b>[ 🛡 FILE INSPECTOR ]</b>\n\n"
-        "Send any file or document, and I will inspect its extension, size, and potential security risks."
+        "Send any file or document, and I will inspect its extension, size, and security risks."
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -191,7 +219,7 @@ async def process_file_inspection(message: Message):
     if ext in dangerous_extensions:
         risk_level = "HIGH RISK ❌ (Executable / Script format)"
     elif ext in warning_extensions:
-        risk_level = "Moderate Warning ⚠️ (Compressed or macro-enabled container)"
+        risk_level = "Moderate Warning ⚠️ (Compressed container)"
         
     size_mb = round(file_size / (1024 * 1024), 2)
     
@@ -199,7 +227,7 @@ async def process_file_inspection(message: Message):
         f"<b>[ 🛡 FILE INSPECTION REPORT ]</b>\n\n"
         f"• File Name: <code>{file_name}</code>\n"
         f"• Size: <code>{size_mb} MB</code>\n"
-        f"• Type (MIME): <code>{mime_type}</code>\n"
+        f"• Type: <code>{mime_type}</code>\n"
         f"• Extension: <code>.{ext}</code>\n\n"
         f"<b>Security Assessment:</b>\n"
         f"Status: <b>{risk_level}</b>"
@@ -210,26 +238,72 @@ async def process_file_inspection(message: Message):
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
-# --- 4. PASSWORD GENERATOR ---
+# --- 4. PASSWORD MANAGER & GENERATOR ---
 @dp.callback_query(F.data == "tool_pass")
-async def password_generator(callback: CallbackQuery):
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
-    password = "".join(random.choices(chars, k=16))
-    
+async def password_manager_menu(callback: CallbackQuery):
     text = (
-        "<b>[ 🔑 SECURE PASSWORD GENERATOR ]</b>\n\n"
-        "Here is your strong generated password (16 characters):\n\n"
-        f"<code>{password}</code>\n\n"
-        "<i>Tap the password above to copy it safely.</i>"
+        "<b>[ 🔑 PASSWORD MANAGER ]</b>\n\n"
+        "Generate secure passwords or access your saved vault securely:"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Generate Another", callback_data="tool_pass")],
+        [InlineKeyboardButton(text="✨ Generate New Password", callback_data="gen_password")],
+        [InlineKeyboardButton(text="📁 View Saved Passwords", callback_data="view_saved_passes")],
         [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
+@dp.callback_query(F.data == "gen_password")
+async def generate_password_action(callback: CallbackQuery):
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    password = "".join(random.choices(chars, k=16))
+    
+    text = (
+        "<b>[ 🔑 GENERATED PASSWORD ]</b>\n\n"
+        f"<code>{password}</code>\n\n"
+        "<i>Tap the password to copy, or use options below:</i>"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾 Save to Vault", callback_data=f"save_pass_{password}"),
+         InlineKeyboardButton(text="📤 Send to Chat", callback_data=f"send_pass_{password}")],
+        [InlineKeyboardButton(text="🔄 Generate Another", callback_data="gen_password")],
+        [InlineKeyboardButton(text="← Password Menu", callback_data="tool_pass")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("save_pass_"))
+async def save_password_callback(callback: CallbackQuery):
+    password = callback.data.replace("save_pass_", "")
+    user_id = callback.from_user.id
+    save_password_db(user_id, password)
+    await callback.answer("✅ Password successfully saved to your vault!", show_alert=True)
+
+@dp.callback_query(F.data.startswith("send_pass_"))
+async def send_password_callback(callback: CallbackQuery):
+    password = callback.data.replace("send_pass_", "")
+    await callback.message.answer(f"🔑 Here is your password:\n<code>{password}</code>", parse_mode="HTML")
+    await callback.answer("Sent to chat!")
+
+@dp.callback_query(F.data == "view_saved_passes")
+async def view_saved_passwords(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    rows = get_saved_passwords_db(user_id)
+    
+    if not rows:
+        text = "<b>[ 📁 SAVED PASSWORDS VAULT ]</b>\n\nYour vault is currently empty."
+    else:
+        pass_list = "\n".join([f"• <code>{item[0]}</code> — <i>{item[1]}</i>" for item in rows])
+        text = f"<b>[ 📁 SAVED PASSWORDS VAULT ]</b>\n\n{pass_list}"
+        
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← Password Menu", callback_data="tool_pass")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
 async def main():
+    init_db()
     logging.basicConfig(level=logging.INFO)
     print("secur3tybot is online and running!")
     try:
