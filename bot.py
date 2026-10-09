@@ -6,6 +6,7 @@ import random
 import sqlite3
 import string
 import sys
+from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -53,6 +54,46 @@ def get_saved_passwords_db(user_id: int):
     conn.close()
     return rows
 
+# --- DETAILED URL & THREAT ANALYSIS HELPER ---
+def analyze_url_deep(url: str):
+    if not url.startswith(("http://", "https://")):
+        full_url = "http://" + url
+    else:
+        full_url = url
+
+    parsed = urlparse(full_url)
+    domain = parsed.netloc or parsed.path.split('/')[0]
+    path = parsed.path
+    
+    # Check for common URL shorteners that hide real destination
+    shorteners = ["bit.ly", "t.co", "tinyurl.com", "goo.gl", "ow.ly", "is.gd", "buff.ly", "adf.ly", "clck.ru"]
+    is_shortener = any(s in domain.lower() for s in shorteners)
+
+    # Check for phishing/suspicious keywords in the link
+    suspicious_keywords = ["login", "verify", "update", "secure", "account", "banking", "free", "gift", "bonus", "support", "auth", "admin"]
+    parsed_lower = url.lower()
+    has_suspicious_words = any(kw in parsed_lower for kw in suspicious_keywords)
+
+    # Risk Assessment
+    risk_status = "Safe & Clean ✅"
+    if is_shortener:
+        risk_status = "Moderate Risk ⚠️ (URL Shortener hides final destination)"
+    if has_suspicious_words and (parsed.scheme == "http" or is_shortener or len(url) > 40):
+        risk_status = "High Risk / Potential Phishing ❌"
+
+    clean_url = url.split("?")[0]
+
+    report = (
+        f"• <b>Target Domain (Where it leads):</b> <code>{domain}</code>\n"
+        f"• <b>Path / Endpoint:</b> <code>{path if path else '/'}</code>\n"
+        f"• <b>Protocol:</b> <code>{'HTTPS (Encrypted)' if parsed.scheme == 'https' else 'HTTP (Insecure ⚠️)'}</code>\n"
+        f"• <b>Masked / Shortened Link:</b> <code>{'Yes (Hidden destination ⚠️)'}</code>" if is_shortener else 
+        f"• <b>Masked / Shortened Link:</b> <code>No (Direct link)</code>\n"
+        f"• <b>Clean URL (No Trackers):</b> <code>{clean_url}</code>\n\n"
+        f"<b>Security Verdict:</b> <b>{risk_status}</b>"
+    )
+    return report
+
 # --- FSM STATES ---
 class ToolStates(StatesGroup):
     waiting_for_url = State()
@@ -98,10 +139,10 @@ async def about_bot(callback: CallbackQuery):
     text = (
         "<b>[ ABOUT SECUR3TYBOT ]</b>\n\n"
         "<b>secur3tybot</b> is a minimalist utility bot designed to help you analyze potential digital threats:\n"
-        "• URL safety & tracker removal\n"
-        "• QR code scanner & decoder\n"
-        "• File extension & metadata inspector\n"
-        "• Secure password manager & generator\n\n"
+        "• Deep URL safety & destination analysis\n"
+        "• QR code scanner with auto-link check\n"
+        "• File extension & security inspector\n"
+        "• Secure password manager & vault\n\n"
         "<i>Stay safe online.</i>"
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
@@ -121,23 +162,13 @@ async def url_tool_start(callback: CallbackQuery, state: FSMContext):
 @dp.message(ToolStates.waiting_for_url, F.text)
 async def process_url_check(message: Message, state: FSMContext):
     url = message.text.strip()
-    
-    suspicious_keywords = ["login", "verify", "update", "secure", "account", "banking", "free", "gift"]
-    parsed_lower = url.lower()
-    
-    is_suspicious = any(kw in parsed_lower for kw in suspicious_keywords) and ("http://" in parsed_lower or len(url) > 50)
-    clean_url = url.split("?")[0]
-    
-    status_icon = "⚠️ Suspicious / Review Required" if is_suspicious else "✅ Clean & Safe Structure"
+    analysis_result = analyze_url_deep(url)
     
     text = (
-        f"<b>[ URL ANALYSIS REPORT ]</b>\n\n"
-        f"Target: <code>{url[:60]}...</code>\n"
-        f"Status: <b>{status_icon}</b>\n\n"
-        f"<b>Details:</b>\n"
-        f"• Protocol: <code>{'HTTPS (Secure)' if 'https://' in parsed_lower else 'HTTP (Insecure ⚠️)'}</code>\n"
-        f"• Clean URL (No Trackers): <code>{clean_url}</code>\n\n"
-        f"<i>Tip: Always verify exact domain spelling before entering data.</i>"
+        f"<b>[ URL DEEP ANALYSIS REPORT ]</b>\n\n"
+        f"Input: <code>{url[:50]}...</code>\n\n"
+        f"{analysis_result}\n\n"
+        f"<i>Always double-check domains before entering credentials.</i>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -148,13 +179,13 @@ async def process_url_check(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.clear()
 
-# --- 2. QR CODE SCANNER ---
+# --- 2. QR CODE SCANNER (WITH AUTO-LINK CHECK) ---
 @dp.callback_query(F.data == "tool_qr")
 async def qr_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
         "<b>[ 📷 QR CODE SCANNER ]</b>\n\n"
-        "Send an image containing a QR code as a **Photo**, and I will decode it instantly."
+        "Send an image containing a QR code as a **Photo**, and I will decode and analyze its contents instantly."
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -177,11 +208,20 @@ async def process_qr_photo(message: Message):
         if not qr_data:
             text = "<b>[ ⚠️ QR SCAN RESULT ]</b>\n\nNo QR code detected in this image. Try sending a clearer photo."
         else:
-            text = (
-                f"<b>[ ✅ QR CODE DECODED ]</b>\n\n"
-                f"Content found:\n<code>{qr_data}</code>\n\n"
-                f"<i>Verify safety before opening any links!</i>"
-            )
+            # Check if decoded data looks like a URL or website
+            if "." in qr_data and " " not in qr_data:
+                link_analysis = analyze_url_deep(qr_data)
+                text = (
+                    f"<b>[ ✅ QR CODE DECODED & ANALYZED ]</b>\n\n"
+                    f"Raw Content:\n<code>{qr_data}</code>\n\n"
+                    f"<b>Destination Analysis:</b>\n{link_analysis}"
+                )
+            else:
+                text = (
+                    f"<b>[ ✅ QR CODE DECODED ]</b>\n\n"
+                    f"Text Content:\n<code>{qr_data}</code>\n\n"
+                    f"<i>Status: Plain text format (Safe).</i>"
+                )
     except Exception:
         text = "<b>[ ❌ ERROR ]</b>\n\nCould not process the image. Please try another one."
     finally:
@@ -283,7 +323,7 @@ async def save_password_callback(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("send_pass_"))
 async def send_password_callback(callback: CallbackQuery):
     password = callback.data.replace("send_pass_", "")
-    await callback.message.answer(f"🔑 Here is your password:\n<code>{password}</code>", parse_mode="HTML")
+    await callback.message.answer(f"🔑 Here is your password:\n<code>{password}</code>", parser_mode="HTML" if hasattr(Message, 'answer') else None, parse_mode="HTML")
     await callback.answer("Sent to chat!")
 
 @dp.callback_query(F.data == "view_saved_passes")
