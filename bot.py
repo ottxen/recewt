@@ -15,11 +15,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from aiogram.exceptions import TelegramBadRequest
 
-# Бібліотеки для читання QR-кодів з картинок
+# Вбудований у OpenCV детектор QR-кодів (не потребує сторонніх системних бібліотек)
 import cv2
-from pyzbar.pyzbar import decode
 
 TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 
@@ -29,7 +27,6 @@ dp = Dispatcher()
 # --- FSM STATES ---
 class ToolStates(StatesGroup):
     waiting_for_url = State()
-    waiting_for_password_length = State()
 
 # --- MAIN KEYBOARD ---
 def get_main_menu():
@@ -96,13 +93,11 @@ async def url_tool_start(callback: CallbackQuery, state: FSMContext):
 async def process_url_check(message: Message, state: FSMContext):
     url = message.text.strip()
     
-    # Базовий аналіз посилання на фішингові патерни або небезпечні ознаки
     suspicious_keywords = ["login", "verify", "update", "secure", "account", "banking", "free", "gift"]
     parsed_lower = url.lower()
     
     is_suspicious = any(kw in parsed_lower for kw in suspicious_keywords) and ("http://" in parsed_lower or len(url) > 50)
-    
-    clean_url = url.split("?")[0] # Убираємо UTM-мітки
+    clean_url = url.split("?")[0]
     
     status_icon = "⚠️ Suspicious / Review Required" if is_suspicious else "✅ Clean & Safe Structure"
     
@@ -130,38 +125,36 @@ async def qr_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
         "<b>[ 📷 QR CODE SCANNER ]</b>\n\n"
-        "Send an image containing a QR code as a **Photo** (not as a file/document), and I will decode and check it instantly."
+        "Send an image containing a QR code as a **Photo**, and I will decode and check it instantly."
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
 
 @dp.message(F.photo)
-async def process_qr_photo(message: Message, bot_obj: Bot = bot):
-    # Завантажуємо фото в пам'ять
+async def process_qr_photo(message: Message):
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     file_bytes = await bot.download_file(file_info.file_path)
     
-    # Зберігаємо тимчасово для сканування OpenCV
     temp_path = f"temp_{message.from_user.id}.jpg"
     with open(temp_path, "wb") as f:
         f.write(file_bytes.read() if hasattr(file_bytes, "read") else file_bytes)
         
     try:
         img = cv2.imread(temp_path)
-        decoded_objects = decode(img)
+        detector = cv2.QRCodeDetector()
+        qr_data, _, _ = detector.detectAndDecode(img)
         
-        if not decoded_objects:
+        if not qr_data:
             text = "<b>[ ⚠️ QR SCAN RESULT ]</b>\n\nNo QR code detected in this image. Try sending a clearer photo."
         else:
-            qr_data = decoded_objects[0].data.decode("utf-8")
             text = (
                 f"<b>[ ✅ QR CODE DECODED ]</b>\n\n"
                 f"Content found:\n<code>{qr_data}</code>\n\n"
                 f"<i>If this is a website link, make sure to verify its safety before opening!</i>"
             )
-    except Exception as e:
-        text = f"<b>[ ❌ ERROR ]</b>\n\nCould not process the image. Please try another one."
+    except Exception:
+        text = "<b>[ ❌ ERROR ]</b>\n\nCould not process the image. Please try another one."
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
