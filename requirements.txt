@@ -1,2 +1,5 @@
-aiogram
-opencv-python-headless
+
+aiogram>=3.20,<4.0
+telethon>=1.40,<2.0
+asyncpg>=0.30,<1.0
+python-dotenv>=1.0,<2.0
