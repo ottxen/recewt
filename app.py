@@ -339,13 +339,11 @@ async def watch_loop():
 
 async def on_startup():
     await db.init_db()
-    await checker.start()
     asyncio.create_task(watch_loop())
     logging.info("R3GISTRY started successfully")
 
 
 async def on_shutdown():
-    await checker.stop()
     await db.close_db()
 
 
@@ -359,4 +357,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-  
+    
