@@ -56,6 +56,16 @@ def get_saved_passwords_db(user_id: int):
 
 # --- DETAILED URL & THREAT ANALYSIS HELPER ---
 def analyze_url_deep(url: str):
+    url_lower = url.lower()
+    
+    # Check for stuffed or multiple concatenated links
+    if url_lower.count("http://") > 1 or url_lower.count("https://") > 1 or "http" in url_lower[5:]:
+        return (
+            "<b>target domain:</b> <code>multiple / malformed urls detected</code>\n"
+            "<b>security status:</b> <b>high risk ❌ (url obfuscation detected)</b>\n\n"
+            "<i>warning: this link contains merged or hidden urls designed to disguise its real destination.</i>"
+        )
+
     if not url.startswith(("http://", "https://")):
         full_url = "http://" + url
     else:
@@ -64,34 +74,32 @@ def analyze_url_deep(url: str):
     parsed = urlparse(full_url)
     domain = parsed.netloc or parsed.path.split('/')[0]
     path = parsed.path
+    query = parsed.query
+
+    # Threat and payload keyword matching
+    danger_words = ["virus", "cure", "hack", "stealer", "grabber", "bot", "token", "payload", "malware", "exploit"]
+    has_danger_words = any(word in url_lower for word in danger_words)
+    is_trusted_domain = any(trusted in domain.lower() for trusted in ["icloud.com", "apple.com", "google.com", "t.me"])
     
-    # Check for common URL shorteners that hide real destination
-    shorteners = ["bit.ly", "t.co", "tinyurl.com", "goo.gl", "ow.ly", "is.gd", "buff.ly", "adf.ly", "clck.ru"]
-    is_shortener = any(s in domain.lower() for s in shorteners)
-
-    # Check for phishing/suspicious keywords in the link
-    suspicious_keywords = ["login", "verify", "update", "secure", "account", "banking", "free", "gift", "bonus", "support", "auth", "admin"]
-    parsed_lower = url.lower()
-    has_suspicious_words = any(kw in parsed_lower for kw in suspicious_keywords)
-
-    # Risk Assessment
-    risk_status = "Safe & Clean ✅"
-    if is_shortener:
-        risk_status = "Moderate Risk ⚠️ (URL Shortener hides final destination)"
-    if has_suspicious_words and (parsed.scheme == "http" or is_shortener or len(url) > 40):
-        risk_status = "High Risk / Potential Phishing ❌"
+    risk_status = "safe & clean ✅"
+    if has_danger_words or "@" in url or len(query) > 80:
+        risk_status = "high risk / potential exploit ❌"
+        if is_trusted_domain:
+            risk_status = "high risk ❌ (trusted domain abused for payload delivery)"
 
     clean_url = url.split("?")[0]
 
     report = (
-        f"• <b>Target Domain (Where it leads):</b> <code>{domain}</code>\n"
-        f"• <b>Path / Endpoint:</b> <code>{path if path else '/'}</code>\n"
-        f"• <b>Protocol:</b> <code>{'HTTPS (Encrypted)' if parsed.scheme == 'https' else 'HTTP (Insecure ⚠️)'}</code>\n"
-        f"• <b>Masked / Shortened Link:</b> <code>{'Yes (Hidden destination ⚠️)'}</code>" if is_shortener else 
-        f"• <b>Masked / Shortened Link:</b> <code>No (Direct link)</code>\n"
-        f"• <b>Clean URL (No Trackers):</b> <code>{clean_url}</code>\n\n"
-        f"<b>Security Verdict:</b> <b>{risk_status}</b>"
+        f"• <b>target domain:</b> <code>{domain}</code>\n"
+        f"• <b>endpoint path:</b> <code>{path if path else '/'}</code>\n"
+        f"• <b>protocol check:</b> <code>{'valid' if parsed.scheme in ['http', 'https'] else 'malformed ⚠️'}</code>\n"
+        f"• <b>clean url:</b> <code>{clean_url}</code>\n\n"
+        f"<b>security status:</b> <b>{risk_status}</b>"
     )
+    
+    if has_danger_words or "@" in url:
+        report += "\n\n<i>warning: suspicious markers found in parameters or link structure.</i>"
+        
     return report
 
 # --- FSM STATES ---
@@ -101,16 +109,16 @@ class ToolStates(StatesGroup):
 # --- MAIN KEYBOARD ---
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 Check URL Safety", callback_data="tool_url"),
-         InlineKeyboardButton(text="📷 Scan QR Code", callback_data="tool_qr")],
-        [InlineKeyboardButton(text="🛡 File Inspector", callback_data="tool_file"),
-         InlineKeyboardButton(text="🔑 Password Manager", callback_data="tool_pass")],
-        [InlineKeyboardButton(text="ℹ️ About secur3tybot", callback_data="tool_about")]
+        [InlineKeyboardButton(text="🔗 check url safety", callback_data="tool_url"),
+         InlineKeyboardButton(text="📷 scan qr code", callback_data="tool_qr")],
+        [InlineKeyboardButton(text="🛡 file inspector", callback_data="tool_file"),
+         InlineKeyboardButton(text="🔑 password manager", callback_data="tool_pass")],
+        [InlineKeyboardButton(text="ℹ️ about secur3tybot", callback_data="tool_about")]
     ])
 
 def get_back_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
     ])
 
 # --- START COMMAND ---
@@ -118,9 +126,9 @@ def get_back_keyboard():
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     text = (
-        "<b>[ 🛡 SECUR3TYBOT // SYSTEM ]</b>\n\n"
-        "Welcome! Your personal digital safety toolkit.\n"
-        "Choose a tool below to get started:"
+        "<b>secur3tybot // system</b>\n\n"
+        "welcome to your digital security toolkit.\n"
+        "select a tool below to begin:"
     )
     await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
 
@@ -128,8 +136,8 @@ async def cmd_start(message: Message, state: FSMContext):
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
-        "<b>[ 🛡 SECUR3TYBOT // SYSTEM ]</b>\n\n"
-        "Main menu. Choose a tool:"
+        "<b>secur3tybot // system</b>\n\n"
+        "main menu. select a tool:"
     )
     await callback.message.edit_text(text, reply_markup=get_main_menu(), parse_mode="HTML")
     await callback.answer()
@@ -137,13 +145,13 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "tool_about")
 async def about_bot(callback: CallbackQuery):
     text = (
-        "<b>[ ABOUT SECUR3TYBOT ]</b>\n\n"
-        "<b>secur3tybot</b> is a minimalist utility bot designed to help you analyze potential digital threats:\n"
-        "• Deep URL safety & destination analysis\n"
-        "• QR code scanner with auto-link check\n"
-        "• File extension & security inspector\n"
-        "• Secure password manager & vault\n\n"
-        "<i>Stay safe online.</i>"
+        "<b>about secur3tybot</b>\n\n"
+        "minimalist digital security utility:\n"
+        "• deep url & payload analysis\n"
+        "• qr code decoder with link verification\n"
+        "• file extension & threat inspector\n"
+        "• password generator & private vault\n\n"
+        "<i>stay safe online.</i>"
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -153,8 +161,8 @@ async def about_bot(callback: CallbackQuery):
 async def url_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ToolStates.waiting_for_url)
     text = (
-        "<b>[ 🔗 URL SAFETY CHECKER ]</b>\n\n"
-        "Send or paste the URL you want to analyze:"
+        "<b>url safety checker</b>\n\n"
+        "send or paste the url you want to inspect:"
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -165,27 +173,26 @@ async def process_url_check(message: Message, state: FSMContext):
     analysis_result = analyze_url_deep(url)
     
     text = (
-        f"<b>[ URL DEEP ANALYSIS REPORT ]</b>\n\n"
-        f"Input: <code>{url[:50]}...</code>\n\n"
-        f"{analysis_result}\n\n"
-        f"<i>Always double-check domains before entering credentials.</i>"
+        f"<b>url analysis report</b>\n\n"
+        f"input: <code>{url[:50]}...</code>\n\n"
+        f"{analysis_result}"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Check Another URL", callback_data="tool_url")],
-        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+        [InlineKeyboardButton(text="🔍 check another url", callback_data="tool_url")],
+        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
     ])
     
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     await state.clear()
 
-# --- 2. QR CODE SCANNER (WITH AUTO-LINK CHECK) ---
+# --- 2. QR CODE SCANNER ---
 @dp.callback_query(F.data == "tool_qr")
 async def qr_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
-        "<b>[ 📷 QR CODE SCANNER ]</b>\n\n"
-        "Send an image containing a QR code as a **Photo**, and I will decode and analyze its contents instantly."
+        "<b>qr code scanner</b>\n\n"
+        "send an image containing a qr code as a photo to decode and analyze its target:"
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -206,30 +213,29 @@ async def process_qr_photo(message: Message):
         qr_data, _, _ = detector.detectAndDecode(img)
         
         if not qr_data:
-            text = "<b>[ ⚠️ QR SCAN RESULT ]</b>\n\nNo QR code detected in this image. Try sending a clearer photo."
+            text = "<b>qr scan result</b>\n\nno qr code detected in this image. try uploading a clearer image."
         else:
-            # Check if decoded data looks like a URL or website
             if "." in qr_data and " " not in qr_data:
                 link_analysis = analyze_url_deep(qr_data)
                 text = (
-                    f"<b>[ ✅ QR CODE DECODED & ANALYZED ]</b>\n\n"
-                    f"Raw Content:\n<code>{qr_data}</code>\n\n"
-                    f"<b>Destination Analysis:</b>\n{link_analysis}"
+                    f"<b>qr code decoded & analyzed</b>\n\n"
+                    f"raw content:\n<code>{qr_data}</code>\n\n"
+                    f"<b>destination report:</b>\n{link_analysis}"
                 )
             else:
                 text = (
-                    f"<b>[ ✅ QR CODE DECODED ]</b>\n\n"
-                    f"Text Content:\n<code>{qr_data}</code>\n\n"
-                    f"<i>Status: Plain text format (Safe).</i>"
+                    f"<b>qr code decoded</b>\n\n"
+                    f"content:\n<code>{qr_data}</code>\n\n"
+                    f"<i>type: plain text format (safe)</i>"
                 )
     except Exception:
-        text = "<b>[ ❌ ERROR ]</b>\n\nCould not process the image. Please try another one."
+        text = "<b>error</b>\n\ncould not process the image. please try another file."
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
             
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -238,8 +244,8 @@ async def process_qr_photo(message: Message):
 async def file_tool_start(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
-        "<b>[ 🛡 FILE INSPECTOR ]</b>\n\n"
-        "Send any file or document, and I will inspect its extension, size, and security risks."
+        "<b>file inspector</b>\n\n"
+        "send any file or document to inspect its format, extension, and risk profile:"
     )
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
@@ -256,26 +262,25 @@ async def process_file_inspection(message: Message):
     dangerous_extensions = ["exe", "scr", "bat", "cmd", "js", "vbs", "pif", "msi", "jar", "apk"]
     warning_extensions = ["zip", "rar", "7z", "iso", "docm", "xlsm"]
     
-    risk_level = "Safe Standard Format ✅"
+    risk_level = "safe standard format ✅"
     if ext in dangerous_extensions:
-        risk_level = "HIGH RISK ❌ (Executable / Script format)"
+        risk_level = "high risk ❌ (executable / script format)"
     elif ext in warning_extensions:
-        risk_level = "Moderate Warning ⚠️ (Compressed container)"
+        risk_level = "moderate warning ⚠️ (compressed container)"
         
     size_mb = round(file_size / (1024 * 1024), 2)
     
     text = (
-        f"<b>[ 🛡 FILE INSPECTION REPORT ]</b>\n\n"
-        f"• File Name: <code>{file_name}</code>\n"
-        f"• Size: <code>{size_mb} MB</code>\n"
-        f"• Type: <code>{mime_type}</code>\n"
-        f"• Extension: <code>.{ext}</code>\n\n"
-        f"<b>Security Assessment:</b>\n"
-        f"Status: <b>{risk_level}</b>"
+        f"<b>file inspection report</b>\n\n"
+        f"• file name: <code>{file_name}</code>\n"
+        f"• size: <code>{size_mb} mb</code>\n"
+        f"• mime type: <code>{mime_type}</code>\n"
+        f"• extension: <code>.{ext}</code>\n\n"
+        f"<b>security assessment:</b> <b>{risk_level}</b>"
     )
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
     ])
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -283,13 +288,13 @@ async def process_file_inspection(message: Message):
 @dp.callback_query(F.data == "tool_pass")
 async def password_manager_menu(callback: CallbackQuery):
     text = (
-        "<b>[ 🔑 PASSWORD MANAGER ]</b>\n\n"
-        "Generate secure passwords or access your saved vault securely:"
+        "<b>password manager</b>\n\n"
+        "generate secure credentials or manage saved keys in your vault:"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ Generate New Password", callback_data="gen_password")],
-        [InlineKeyboardButton(text="📁 View Saved Passwords", callback_data="view_saved_passes")],
-        [InlineKeyboardButton(text="← Main Menu", callback_data="menu_back")]
+        [InlineKeyboardButton(text="✨ generate new password", callback_data="gen_password")],
+        [InlineKeyboardButton(text="📁 view saved passwords", callback_data="view_saved_passes")],
+        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
@@ -300,15 +305,15 @@ async def generate_password_action(callback: CallbackQuery):
     password = "".join(random.choices(chars, k=16))
     
     text = (
-        "<b>[ 🔑 GENERATED PASSWORD ]</b>\n\n"
+        "<b>generated password</b>\n\n"
         f"<code>{password}</code>\n\n"
-        "<i>Tap the password to copy, or use options below:</i>"
+        "<i>tap code to copy, or select an option:</i>"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💾 Save to Vault", callback_data=f"save_pass_{password}"),
-         InlineKeyboardButton(text="📤 Send to Chat", callback_data=f"send_pass_{password}")],
-        [InlineKeyboardButton(text="🔄 Generate Another", callback_data="gen_password")],
-        [InlineKeyboardButton(text="← Password Menu", callback_data="tool_pass")]
+        [InlineKeyboardButton(text="💾 save to vault", callback_data=f"save_pass_{password}"),
+         InlineKeyboardButton(text="📤 send to chat", callback_data=f"send_pass_{password}")],
+        [InlineKeyboardButton(text="🔄 generate another", callback_data="gen_password")],
+        [InlineKeyboardButton(text="← password menu", callback_data="tool_pass")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
@@ -318,13 +323,13 @@ async def save_password_callback(callback: CallbackQuery):
     password = callback.data.replace("save_pass_", "")
     user_id = callback.from_user.id
     save_password_db(user_id, password)
-    await callback.answer("✅ Password successfully saved to your vault!", show_alert=True)
+    await callback.answer("✅ password saved to your vault!", show_alert=True)
 
 @dp.callback_query(F.data.startswith("send_pass_"))
 async def send_password_callback(callback: CallbackQuery):
     password = callback.data.replace("send_pass_", "")
-    await callback.message.answer(f"🔑 Here is your password:\n<code>{password}</code>", parser_mode="HTML" if hasattr(Message, 'answer') else None, parse_mode="HTML")
-    await callback.answer("Sent to chat!")
+    await callback.message.answer(f"🔑 password:\n<code>{password}</code>", parse_mode="HTML")
+    await callback.answer("sent to chat!")
 
 @dp.callback_query(F.data == "view_saved_passes")
 async def view_saved_passwords(callback: CallbackQuery):
@@ -332,13 +337,13 @@ async def view_saved_passwords(callback: CallbackQuery):
     rows = get_saved_passwords_db(user_id)
     
     if not rows:
-        text = "<b>[ 📁 SAVED PASSWORDS VAULT ]</b>\n\nYour vault is currently empty."
+        text = "<b>saved passwords vault</b>\n\nyour vault is currently empty."
     else:
         pass_list = "\n".join([f"• <code>{item[0]}</code> — <i>{item[1]}</i>" for item in rows])
-        text = f"<b>[ 📁 SAVED PASSWORDS VAULT ]</b>\n\n{pass_list}"
+        text = f"<b>saved passwords vault</b>\n\n{pass_list}"
         
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← Password Menu", callback_data="tool_pass")]
+        [InlineKeyboardButton(text="← password menu", callback_data="tool_pass")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
@@ -356,4 +361,4 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
-    
+            
