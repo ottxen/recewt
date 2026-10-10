@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
-checker.check_username(username)
+await check_username(username)
 
 
 class InputState(StatesGroup):
