@@ -17,8 +17,7 @@ from aiogram.types import (
 
 import config
 import db
-from checker import UsernameChecker
-
+from checker import check_username
 
 logging.basicConfig(level=logging.INFO)
 
