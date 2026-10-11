@@ -36,14 +36,16 @@ if not TOKEN:
 router = Router()
 DB_NAME = "bot_database.db"
 
-# State for monitoring a taken username
+# States for FSM
+class GenState(StatesGroup):
+    choosing_length = State()
+
 class MonitorState(StatesGroup):
     waiting_for_username = State()
 
 # --- DATABASE SETUP ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        # History table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,7 +55,6 @@ async def init_db():
                 created_at TEXT
             )
         """)
-        # Saved usernames table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS saved_usernames (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +63,6 @@ async def init_db():
                 saved_at TEXT
             )
         """)
-        # Monitoring table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS monitoring (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,21 +128,21 @@ def generate_random(length: int, with_digits: bool) -> str:
     chars = "abcdefghijklmnopqrstuvwxyz0123456789" if with_digits else "abcdefghijklmnopqrstuvwxyz"
     return ''.join(random.choice(chars) for _ in range(length))
 
-async def find_free_username(mode: str, length: int = 5, with_digits: bool = True) -> str:
-    attempts = 0
-    while attempts < 15:
-        attempts += 1
+async def find_free_username(mode: str, length: int, with_digits: bool):
+    """Loops until a strictly FREE username is found (status == 'free')."""
+    while True:
         if mode == "symmetric":
             uname = generate_symmetric(length)
         else:
             uname = generate_random(length, with_digits)
             
         status = await check_username_on_fragment(uname)
+        # Беремо ТІЛЬКИ повністю вільні юзернейми
         if status == "free":
-            return uname
-    return uname
+            return uname, status
+        await asyncio.sleep(0.3)
 
-# --- KEYBOARDS (VERTICAL LAYOUT - ONE BUTTON PER ROW) ---
+# --- KEYBOARDS (VERTICAL LAYOUT) ---
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Generate Usernames", callback_data="menu_generate")],
@@ -159,12 +159,22 @@ def generation_modes_kb():
         [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main")]
     ])
 
+def length_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="5 Characters", callback_data="gen_len_5")],
+        [InlineKeyboardButton(text="6 Characters", callback_data="gen_len_6")],
+        [InlineKeyboardButton(text="7 Characters", callback_data="gen_len_7")],
+        [InlineKeyboardButton(text="8 Characters", callback_data="gen_len_8")],
+        [InlineKeyboardButton(text="⬅️ Back to Modes", callback_data="menu_generate")]
+    ])
+
 def result_kb(username: str):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Try Again", callback_data="gen_repeat")],
         [InlineKeyboardButton(text="💾 Save Username", callback_data=f"save_{username}")],
+        [InlineKeyboardButton(text="🔗 Check on Fragment", url=f"https://fragment.com/username/{username}")],
         [InlineKeyboardButton(text="📤 Share to Chat", switch_inline_query=f"@{username}")],
-        [InlineKeyboardButton(text="⬅️ Back to Modes", callback_data="menu_generate")]
+        [InlineKeyboardButton(text="⬅️ Back to Lengths", callback_data="gen_back_to_lengths")]
     ])
 
 # --- HANDLERS ---
@@ -185,7 +195,8 @@ async def cb_main(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @router.callback_query(F.data == "menu_generate")
-async def cb_generate_menu(callback: CallbackQuery):
+async def cb_generate_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text(
         "⚙️ Choose generation mode:\n\n"
         "• *Symmetric Search* — mirrored aesthetics (e.g., `abba`, `xyyx`).\n"
@@ -196,21 +207,38 @@ async def cb_generate_menu(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("gen_mode_"))
-async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
+async def cb_handle_mode(callback: CallbackQuery, state: FSMContext):
     mode_type = callback.data.split("_")[2]
     await state.update_data(mode=mode_type)
     
-    await callback.message.edit_text("⏳ Searching for an available username via Fragment...")
+    await callback.message.edit_text(
+        "📏 Choose maximum length of the username (5 to 8 characters):",
+        reply_markup=length_kb()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "gen_back_to_lengths")
+async def cb_back_to_lengths(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "📏 Choose maximum length of the username (5 to 8 characters):",
+        reply_markup=length_kb()
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("gen_len_"))
+async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
+    length = int(callback.data.split("_")[2])
+    data = await state.get_data()
+    mode_type = data.get("mode", "digits")
     
-    if mode_type == "symmetric":
-        username = await find_free_username("symmetric", length=5)
-    elif mode_type == "digits":
-        username = await find_free_username("random", length=5, with_digits=True)
-    else:
-        username = await find_free_username("random", length=5, with_digits=False)
-        
-    status = await check_username_on_fragment(username)
-    status_text = "✅ Available" if status == "free" else ("🛒 Available on Fragment" if status == "fragment_available" else "❌ Taken")
+    await state.update_data(length=length)
+    
+    await callback.message.edit_text("⏳ Searching for a 100% free username via Fragment...")
+    
+    with_digits = (mode_type == "digits" or mode_type == "symmetric")
+    username, status = await find_free_username(mode_type, length, with_digits)
+    
+    status_text = "✅ Available"
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_NAME) as db:
@@ -221,7 +249,7 @@ async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
         await db.commit()
 
     await callback.message.edit_text(
-        f"🔍 Found Username:\n\n"
+        f"🔍 Found Free Username:\n\n"
         f"🔹 `@{username}`\n"
         f"📊 Status: *{status_text}*\n\n"
         f"Choose next action:",
@@ -234,18 +262,14 @@ async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
 async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     mode_type = data.get("mode", "digits")
+    length = data.get("length", 5)
     
-    await callback.message.edit_text("⏳ Searching for another available username...")
+    await callback.message.edit_text("⏳ Searching for another free username...")
     
-    if mode_type == "symmetric":
-        username = await find_free_username("symmetric", length=5)
-    elif mode_type == "digits":
-        username = await find_free_username("random", length=5, with_digits=True)
-    else:
-        username = await find_free_username("random", length=5, with_digits=False)
-        
-    status = await check_username_on_fragment(username)
-    status_text = "✅ Available" if status == "free" else ("🛒 Available on Fragment" if status == "fragment_available" else "❌ Taken")
+    with_digits = (mode_type == "digits" or mode_type == "symmetric")
+    username, status = await find_free_username(mode_type, length, with_digits)
+    
+    status_text = "✅ Available"
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_NAME) as db:
@@ -256,7 +280,7 @@ async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
         await db.commit()
 
     await callback.message.edit_text(
-        f"🔍 Found Username:\n\n"
+        f"🔍 Found Free Username:\n\n"
         f"🔹 `@{username}`\n"
         f"📊 Status: *{status_text}*\n\n"
         f"Choose next action:",
@@ -373,12 +397,12 @@ async def background_monitoring(bot: Bot):
                     
                 for row_id, user_id, username in rows:
                     status = await check_username_on_fragment(username)
-                    if status in ["free", "fragment_available"]:
+                    if status == "free":
                         try:
                             await bot.send_message(
                                 user_id,
                                 f"🎉 **ATTENTION! Username is now available!**\n\n"
-                                f"🔹 `@{username}` is free (Status: {status})! Claim it quickly!",
+                                f"🔹 `@{username}` is free! Claim it quickly!",
                                 parse_mode="Markdown"
                             )
                             await db.execute("DELETE FROM monitoring WHERE id = ?", (row_id,))
@@ -399,13 +423,11 @@ async def main():
         
     await init_db()
     
-    # 1. Create bot instance FIRST
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
     
     dp.include_router(router)
     
-    # 2. Pass bot instance to background task AFTER creation
     asyncio.create_task(background_monitoring(bot))
     
     await bot.delete_webhook(drop_pending_updates=True)
@@ -414,4 +436,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
