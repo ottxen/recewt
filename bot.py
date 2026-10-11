@@ -83,24 +83,19 @@ async def update_user_setting(user_id: int, key: str, value):
         await db.execute(f"UPDATE users_config SET {key} = ? WHERE user_id = ?", (value, user_id))
         await db.commit()
 
-# --- OPTIMIZED 5-6 CHAR GENERATOR ---
-def generate_usernames(length: int, with_digits: str, count: int = 5) -> list:
+# --- 1 UNIQUE USERNAME GENERATOR ---
+def generate_single_username(length: int, with_digits: str) -> str:
     chars_no_dig = "abcdefghijklmnopqrstuvwxyz"
     chars_dig = "abcdefghijklmnopqrstuvwxyz0123456789"
-    
-    results = set()
-    while len(results) < count:
-        charset = chars_dig if with_digits == 'on' else chars_no_dig
-        uname = ''.join(random.choice(charset) for _ in range(length))
-        results.add(uname)
-    return list(results)
+    charset = chars_dig if with_digits == 'on' else chars_no_dig
+    return ''.join(random.choice(charset) for _ in range(length))
 
 # --- KEYBOARDS ---
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⌕  Generate usernames", callback_data="menu_generate", style="success")],
+        [InlineKeyboardButton(text="⌕  Generate username", callback_data="menu_generate", style="success")],
         [InlineKeyboardButton(text="⚙  Filters & Settings", callback_data="menu_settings")],
-        [InlineKeyboardButton(text="ⓘ Profile & Storage", callback_data="menu_profile")],
+        [InlineKeyboardButton(text="👤 Profile & Storage", callback_data="menu_profile")],
         [InlineKeyboardButton(text="👁  Monitor username", callback_data="menu_monitor")]
     ])
 
@@ -122,14 +117,13 @@ def profile_kb():
         [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
     ])
 
-def result_kb(usernames_list: list):
-    keyboard = []
-    for uname in usernames_list:
-        keyboard.append([InlineKeyboardButton(text=f"💾 Save @{uname}", callback_data=f"save_{uname}")])
-    
-    keyboard.append([InlineKeyboardButton(text="⟳  Generate new batch", callback_data="menu_generate", style="success")])
-    keyboard.append([InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")])
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+def result_kb(username: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾  Save to favorites", callback_data=f"save_{username}", style="primary")],
+        [InlineKeyboardButton(text="↗  Check in Telegram", url=f"https://t.me/{username}")],
+        [InlineKeyboardButton(text="⟳  Generate next", callback_data="menu_generate", style="success")],
+        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
+    ])
 
 # --- HANDLERS ---
 
@@ -209,23 +203,23 @@ async def cb_profile(callback: CallbackQuery):
 @router.callback_query(F.data == "menu_generate")
 async def cb_generate(callback: CallbackQuery):
     config = await get_user_settings(callback.from_user.id)
-    usernames = generate_usernames(config["length"], config["with_digits"], 5)
+    username = generate_single_username(config["length"], config["with_digits"])
     
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_NAME) as db:
-        for uname in usernames:
-            await db.execute(
-                "INSERT INTO history (user_id, username, created_at) VALUES (?, ?, ?)",
-                (callback.from_user.id, uname, now_str)
-            )
+        await db.execute(
+            "INSERT INTO history (user_id, username, created_at) VALUES (?, ?, ?)",
+            (callback.from_user.id, username, now_str)
+        )
         await db.commit()
 
-    text = f"Generated batch ({config['length']} chars, digits: {config['with_digits'].upper()}):\n\n"
-    for uname in usernames:
-        text += f"• @`{uname}` — (t.me/{uname})\n"
-    text += "\nTap to save or check:"
+    text = (
+        f"Generated option ({config['length']} chars, digits: {config['with_digits'].upper()}):\n\n"
+        f"• @`{username}`\n\n"
+        "Tap the button below to check it in Telegram or generate another one:"
+    )
 
-    await callback.message.edit_text(text, reply_markup=result_kb(usernames), parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=result_kb(username), parse_mode="Markdown")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("save_"))
