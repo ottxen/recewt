@@ -32,18 +32,21 @@ if not TOKEN:
 router = Router()
 DB_NAME = "bot_database.db"
 
-class MonitorState(StatesGroup):
-    waiting_for_username = State()
-
 # --- DATABASE ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS users_config (
+                user_id INTEGER PRIMARY KEY,
+                length INTEGER DEFAULT 5,
+                with_digits TEXT DEFAULT 'off'
+            )
+        """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 username TEXT,
-                status TEXT,
                 created_at TEXT
             )
         """)
@@ -64,29 +67,31 @@ async def init_db():
         """)
         await db.commit()
 
-# --- ADVANCED UNIC/CLEAN GENERATOR ---
-PREFIXES = ["get", "my", "use", "try", "the", "core", "app", "io"]
-ROOTS = ["flux", "vibe", "aura", "shift", "loop", "sync", "pulse", "apex", "zen", "mesh", "flow", "nova"]
-SUFFIXES = ["hq", "io", "ai", "app", "lab", "hub"]
+async def get_user_settings(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT length, with_digits FROM users_config WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {"length": row[0], "with_digits": row[1]}
+            else:
+                await db.execute("INSERT INTO users_config (user_id, length, with_digits) VALUES (?, 5, 'off')", (user_id,))
+                await db.commit()
+                return {"length": 5, "with_digits": 'off'}
 
-def generate_smart_usernames(count: int = 5) -> list:
+async def update_user_setting(user_id: int, key: str, value):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(f"UPDATE users_config SET {key} = ? WHERE user_id = ?", (value, user_id))
+        await db.commit()
+
+# --- OPTIMIZED 5-6 CHAR GENERATOR ---
+def generate_usernames(length: int, with_digits: str, count: int = 5) -> list:
+    chars_no_dig = "abcdefghijklmnopqrstuvwxyz"
+    chars_dig = "abcdefghijklmnopqrstuvwxyz0123456789"
+    
     results = set()
     while len(results) < count:
-        style = random.choice([1, 2, 3])
-        if style == 1:
-            # Наприклад: fluxloop, aurasync
-            uname = random.choice(ROOTS) + random.choice(ROOTS)
-        elif style == 2:
-            # Наприклад: getvibe, tryflux
-            uname = random.choice(PREFIXES) + random.choice(ROOTS)
-        else:
-            # Наприклад: flowio, zenlab
-            uname = random.choice(ROOTS) + random.choice(SUFFIXES)
-        
-        # Додаємо трохи випадковості для унікальності
-        if random.random() > 0.5 and len(uname) < 10:
-            uname += str(random.randint(1, 99))
-            
+        charset = chars_dig if with_digits == 'on' else chars_no_dig
+        uname = ''.join(random.choice(charset) for _ in range(length))
         results.add(uname)
     return list(results)
 
@@ -94,18 +99,35 @@ def generate_smart_usernames(count: int = 5) -> list:
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⌕  Generate usernames", callback_data="menu_generate", style="success")],
-        [InlineKeyboardButton(text="⏱  Check history", callback_data="menu_history")],
-        [InlineKeyboardButton(text="☆  Saved names", callback_data="menu_saved")],
+        [InlineKeyboardButton(text="⚙  Filters & Settings", callback_data="menu_settings")],
+        [InlineKeyboardButton(text="ⓘ Profile & Storage", callback_data="menu_profile")],
         [InlineKeyboardButton(text="👁  Monitor username", callback_data="menu_monitor")]
+    ])
+
+def settings_kb(config: dict):
+    digits_text = "ON [✓]" if config["with_digits"] == 'on' else "OFF [✕]"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"Length: 5", callback_data="set_len_5", style="success" if config["length"]==5 else "primary"),
+            InlineKeyboardButton(text=f"Length: 6", callback_data="set_len_6", style="success" if config["length"]==6 else "primary")
+        ],
+        [InlineKeyboardButton(text=f"Include digits: {digits_text}", callback_data="set_toggle_digits")],
+        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
+    ])
+
+def profile_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="☆  Saved names", callback_data="menu_saved")],
+        [InlineKeyboardButton(text="⏱  Generation history", callback_data="menu_history")],
+        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
     ])
 
 def result_kb(usernames_list: list):
     keyboard = []
-    # Додаємо кнопки для кожного згенерованого варіанту (щоб зберегти чи перевірити)
     for uname in usernames_list:
         keyboard.append([InlineKeyboardButton(text=f"💾 Save @{uname}", callback_data=f"save_{uname}")])
     
-    keyboard.append([InlineKeyboardButton(text="⟳  Generate batch", callback_data="gen_repeat", style="success")])
+    keyboard.append([InlineKeyboardButton(text="⟳  Generate new batch", callback_data="menu_generate", style="success")])
     keyboard.append([InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -114,10 +136,11 @@ def result_kb(usernames_list: list):
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    await init_db()
     await message.answer(
         "Welcome to R3gistry.\n\n"
-        "A clean space for discovering modern brand combinations and unique usernames.\n"
-        "Choose an option below:",
+        "A clean space for discovering 5–6 character Telegram usernames.\n"
+        "Configure your filters or start generating below:",
         reply_markup=main_menu_kb()
     )
 
@@ -130,48 +153,77 @@ async def cb_main(callback: CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
-@router.callback_query(F.data == "menu_generate")
-async def cb_generate_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    
-    usernames = generate_smart_usernames(5)
-    await state.update_data(last_batch=usernames)
-    
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    async with aiosqlite.connect(DB_NAME) as db:
-        for uname in usernames:
-            await db.execute(
-                "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
-                (callback.from_user.id, uname, "Generated", now_str)
-            )
-        await db.commit()
-
-    text = "Fresh generated username ideas:\n\n"
-    for uname in usernames:
-        text += f"• @`{uname}` — (Check in Telegram: t.me/{uname})\n"
-    text += "\nChoose an action below:"
-
-    await callback.message.edit_text(text, reply_markup=result_kb(usernames), parse_mode="Markdown")
+@router.callback_query(F.data == "menu_settings")
+async def cb_settings(callback: CallbackQuery):
+    config = await get_user_settings(callback.from_user.id)
+    text = (
+        "Filters & Settings\n\n"
+        f"• Target length: {config['length']} characters\n"
+        f"• Include digits: {config['with_digits'].upper()}\n\n"
+        "Customize your search parameters below:"
+    )
+    await callback.message.edit_text(text, reply_markup=settings_kb(config))
     await callback.answer()
 
-@router.callback_query(F.data == "gen_repeat")
-async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
-    usernames = generate_smart_usernames(5)
-    await state.update_data(last_batch=usernames)
+@router.callback_query(F.data.startswith("set_len_"))
+async def cb_set_length(callback: CallbackQuery):
+    length = int(callback.data.split("_")[2])
+    await update_user_setting(callback.from_user.id, "length", length)
+    config = await get_user_settings(callback.from_user.id)
+    
+    text = (
+        "Filters & Settings\n\n"
+        f"• Target length: {config['length']} characters\n"
+        f"• Include digits: {config['with_digits'].upper()}\n\n"
+        "Customize your search parameters below:"
+    )
+    await callback.message.edit_text(text, reply_markup=settings_kb(config))
+    await callback.answer()
+
+@router.callback_query(F.data == "set_toggle_digits")
+async def cb_toggle_digits(callback: CallbackQuery):
+    config = await get_user_settings(callback.from_user.id)
+    new_val = 'off' if config['with_digits'] == 'on' else 'on'
+    await update_user_setting(callback.from_user.id, "with_digits", new_val)
+    config = await get_user_settings(callback.from_user.id)
+    
+    text = (
+        "Filters & Settings\n\n"
+        f"• Target length: {config['length']} characters\n"
+        f"• Include digits: {config['with_digits'].upper()}\n\n"
+        "Customize your search parameters below:"
+    )
+    await callback.message.edit_text(text, reply_markup=settings_kb(config))
+    await callback.answer()
+
+@router.callback_query(F.data == "menu_profile")
+async def cb_profile(callback: CallbackQuery):
+    text = (
+        "Profile & Storage\n\n"
+        f"User ID: `{callback.from_user.id}`\n"
+        "Manage your saved combinations and review history:"
+    )
+    await callback.message.edit_text(text, reply_markup=profile_kb(), parse_mode="Markdown")
+    await callback.answer()
+
+@router.callback_query(F.data == "menu_generate")
+async def cb_generate(callback: CallbackQuery):
+    config = await get_user_settings(callback.from_user.id)
+    usernames = generate_usernames(config["length"], config["with_digits"], 5)
     
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_NAME) as db:
         for uname in usernames:
             await db.execute(
-                "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
-                (callback.from_user.id, uname, "Generated", now_str)
+                "INSERT INTO history (user_id, username, created_at) VALUES (?, ?, ?)",
+                (callback.from_user.id, uname, now_str)
             )
         await db.commit()
 
-    text = "Fresh generated username ideas:\n\n"
+    text = f"Generated batch ({config['length']} chars, digits: {config['with_digits'].upper()}):\n\n"
     for uname in usernames:
-        text += f"• @`{uname}` — (Check in Telegram: t.me/{uname})\n"
-    text += "\nChoose an action below:"
+        text += f"• @`{uname}` — (t.me/{uname})\n"
+    text += "\nTap to save or check:"
 
     await callback.message.edit_text(text, reply_markup=result_kb(usernames), parse_mode="Markdown")
     await callback.answer()
@@ -202,14 +254,14 @@ async def cb_history(callback: CallbackQuery):
             rows = await cursor.fetchall()
             
     if not rows:
-        text = "Your check history is currently empty."
+        text = "Your generation history is currently empty."
     else:
-        text = "Recently generated names:\n\n"
+        text = "Generation history (last 10):\n\n"
         for uname, date in rows:
             text += f"• @{uname} — {date}\n"
             
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text="⎋  Back to profile", callback_data="menu_profile", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
@@ -232,45 +284,26 @@ async def cb_saved(callback: CallbackQuery):
             text += f"• @{uname} [{saved_at}]\n"
             
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text="⎋  Back to profile", callback_data="menu_profile", style="danger")]
     ])
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 @router.callback_query(F.data == "menu_monitor")
 async def cb_monitor_menu(callback: CallbackQuery, state: FSMContext):
+    class MonitorState(StatesGroup):
+        waiting_for_username = State()
+        
     await state.set_state(MonitorState.waiting_for_username)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⎋  Cancel", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
     ])
     await callback.message.edit_text(
         "Username monitor\n\n"
-        "Send the username you want to track. If it becomes available, the bot will notify you:",
+        "Send the username you want to track:",
         reply_markup=kb
     )
     await callback.answer()
-
-@router.message(MonitorState.waiting_for_username)
-async def process_monitor_input(message: Message, state: FSMContext):
-    username = message.text.strip().lstrip("@")
-    if not re.match(r"^[a-zA-Z0-9_]{5,}$", username):
-        await message.answer("Invalid format. Use latin letters, numbers, and underscores (min 5 characters):")
-        return
-        
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT INTO monitoring (user_id, username) VALUES (?, ?)",
-            (message.from_user.id, username)
-        )
-        await db.commit()
-        
-    await state.clear()
-    await message.answer(
-        f"Name @{username} successfully added to monitoring.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
-        ])
-    )
 
 async def main():
     if not aiosqlite_available:
