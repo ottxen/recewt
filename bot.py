@@ -300,7 +300,7 @@ async def cb_monitor_menu(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⎋  Cancel", callback_data="menu_main", style="danger")]
     ])
     await callback.message.edit_text(
-        "Username monito
+        "Username monitor\n\n"
         "Send the username you want to track. If it becomes available, the bot will notify you:",
         reply_markup=kb
     )
