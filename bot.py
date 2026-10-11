@@ -11,6 +11,7 @@ try:
 except ImportError:
     aiosqlite_available = False
 
+import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -83,11 +84,37 @@ async def update_user_setting(user_id: int, key: str, value):
         await db.execute(f"UPDATE users_config SET {key} = ? WHERE user_id = ?", (value, user_id))
         await db.commit()
 
-# --- 1 UNIQUE USERNAME GENERATOR ---
-def generate_single_username(length: int, with_digits: str) -> str:
+# --- REAL AVAILABILITY CHECKER ---
+async def check_username_availability(username: str) -> bool:
+    clean_username = username.lstrip("@").lower()
+    url = f"https://t.me/{clean_username}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=4, allow_redirects=True) as response:
+                html = await response.text()
+                # Якщо сторінка вказує, що юзернейм вільний (немає інформації про профіль/канал)
+                if "If you have Telegram, you can contact" not in html and "tgme_page_extra" not in html:
+                    return True
+                return False
+    except Exception:
+        return False
+
+async def find_free_username(length: int, with_digits: str) -> str:
     chars_no_dig = "abcdefghijklmnopqrstuvwxyz"
     chars_dig = "abcdefghijklmnopqrstuvwxyz0123456789"
     charset = chars_dig if with_digits == 'on' else chars_no_dig
+    
+    # Робимо кілька спроб знайти вільний серед згенерованих
+    for _ in range(30):
+        uname = ''.join(random.choice(charset) for _ in range(length))
+        is_free = await check_username_availability(uname)
+        if is_free:
+            return uname
+            
+    # Якщо за 30 спроб не знайшлося ідеально вільного, повертаємо хоча б останній згенерований
     return ''.join(random.choice(charset) for _ in range(length))
 
 # --- KEYBOARDS ---
@@ -133,7 +160,7 @@ async def cmd_start(message: Message, state: FSMContext):
     await init_db()
     await message.answer(
         "Welcome to R3gistry.\n\n"
-        "A clean space for discovering 5–6 character Telegram usernames.\n"
+        "A clean space for discovering available 5–6 character Telegram usernames.\n"
         "Configure your filters or start generating below:",
         reply_markup=main_menu_kb()
     )
@@ -202,8 +229,10 @@ async def cb_profile(callback: CallbackQuery):
 
 @router.callback_query(F.data == "menu_generate")
 async def cb_generate(callback: CallbackQuery):
+    await callback.message.edit_text("⏱  Searching for an available username...")
+    
     config = await get_user_settings(callback.from_user.id)
-    username = generate_single_username(config["length"], config["with_digits"])
+    username = await find_free_username(config["length"], config["with_digits"])
     
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     async with aiosqlite.connect(DB_NAME) as db:
@@ -214,7 +243,7 @@ async def cb_generate(callback: CallbackQuery):
         await db.commit()
 
     text = (
-        f"Generated option ({config['length']} chars, digits: {config['with_digits'].upper()}):\n\n"
+        f"Available option found ({config['length']} chars, digits: {config['with_digits'].upper()}):\n\n"
         f"• @`{username}`\n\n"
         "Tap the button below to check it in Telegram or generate another one:"
     )
@@ -317,4 +346,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+            
