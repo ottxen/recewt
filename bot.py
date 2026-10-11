@@ -22,12 +22,9 @@ from aiogram.types import (
     Message,
 )
 
-# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 
-# Читаємо токен бота з середовища (Railway)
 TOKEN = os.getenv("BOT_TOKEN")
-
 if not TOKEN:
     logging.error("❌ ПОМИЛКА: Змінна середовища BOT_TOKEN не встановлена!")
     exit(1)
@@ -67,29 +64,25 @@ async def init_db():
         """)
         await db.commit()
 
-# --- ПЕРЕВІРКА ЮЗЕРНЕЙМУ ---
+# --- ШВИДКА ПЕРЕВІРКА ЮЗЕРНЕЙМУ ---
 async def check_username(username: str) -> bool:
     clean_username = username.lstrip("@").lower()
     url = f"https://t.me/{clean_username}"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15"
     }
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=5, allow_redirects=True) as response:
+            async with session.get(url, headers=headers, timeout=3, allow_redirects=True) as response:
+                if response.status == 404:
+                    return True
                 html = await response.text()
-                
                 if "If you have Telegram, you can contact" not in html and "tgme_page_extra" not in html:
                     return True
-                
-                if "is restricted" in html or "Aberglauben" in html:
-                    return False
-                    
                 return False
-    except Exception as e:
-        logging.error(f"Помилка перевірки @{clean_username}: {e}")
+    except Exception:
         return False
 
 # --- ГЕНЕРАТОР ---
@@ -113,7 +106,7 @@ def generate_random(length: int, with_digits: bool) -> str:
 
 async def find_free_username(mode: str, length: int, with_digits: bool):
     attempts = 0
-    while attempts < 40:
+    while attempts < 15:  # Зменшено ліміт для миттєвої відповіді без зависань
         attempts += 1
         if mode == "symmetric":
             uname = generate_symmetric(length)
@@ -123,25 +116,25 @@ async def find_free_username(mode: str, length: int, with_digits: bool):
         is_free = await check_username(uname)
         if is_free:
             return uname
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
         
     return generate_random(length, with_digits)
 
-# --- КЛАВІАТУРИ З КОЛЬОРОВИМИ СТИЛЯМИ ---
+# --- ІНТЕРФЕЙС ТА КЛАВІАТУРИ (БЕЗ ЕМОДЗІ, З СИМВОЛАМИ ТА КОЛЬОРАМИ) ---
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 Generate Usernames", callback_data="menu_generate", style="success")],
-        [InlineKeyboardButton(text="📜 Generation History", callback_data="menu_history", style="primary")],
-        [InlineKeyboardButton(text="⭐ Saved Usernames", callback_data="menu_saved", style="primary")],
-        [InlineKeyboardButton(text="👁 Monitor Username", callback_data="menu_monitor")]
+        [InlineKeyboardButton(text="⌕  Generate Usernames", callback_data="menu_generate", style="success")],
+        [InlineKeyboardButton(text="⚙  Generation History", callback_data="menu_history", style="primary")],
+        [InlineKeyboardButton(text="☆  Saved Usernames", callback_data="menu_saved", style="primary")],
+        [InlineKeyboardButton(text="⏱  Monitor Username", callback_data="menu_monitor")]
     ])
 
 def generation_modes_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🪞 Symmetric Search", callback_data="gen_mode_symmetric", style="success")],
-        [InlineKeyboardButton(text="🔠 With Digits", callback_data="gen_mode_digits", style="primary")],
-        [InlineKeyboardButton(text="🔤 Without Digits", callback_data="gen_mode_nodigits", style="primary")],
-        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text=" Symmetric Search", callback_data="gen_mode_symmetric", style="success")],
+        [InlineKeyboardButton(text=" With Digits", callback_data="gen_mode_digits", style="primary")],
+        [InlineKeyboardButton(text=" Without Digits", callback_data="gen_mode_nodigits", style="primary")],
+        [InlineKeyboardButton(text="⎋  Main Menu", callback_data="menu_main", style="danger")]
     ])
 
 def length_kb():
@@ -150,16 +143,15 @@ def length_kb():
         [InlineKeyboardButton(text="6 Characters", callback_data="gen_len_6", style="primary")],
         [InlineKeyboardButton(text="7 Characters", callback_data="gen_len_7", style="primary")],
         [InlineKeyboardButton(text="8 Characters", callback_data="gen_len_8", style="primary")],
-        [InlineKeyboardButton(text="⬅️ Back to Modes", callback_data="menu_generate", style="danger")]
+        [InlineKeyboardButton(text="⎋  Back to Modes", callback_data="menu_generate", style="danger")]
     ])
 
 def result_kb(username: str):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Try Again", callback_data="gen_repeat", style="success")],
-        [InlineKeyboardButton(text="💾 Save Username", callback_data=f"save_{username}", style="primary")],
-        [InlineKeyboardButton(text="🔗 Check on Fragment", url=f"https://fragment.com/username/{username}")],
-        [InlineKeyboardButton(text="📤 Share to Chat", switch_inline_query=f"@{username}")],
-        [InlineKeyboardButton(text="⬅️ Back to Lengths", callback_data="gen_back_to_lengths", style="danger")]
+        [InlineKeyboardButton(text="⟳  Try Again", callback_data="gen_repeat", style="success")],
+        [InlineKeyboardButton(text="⎙  Save Username", callback_data=f"save_{username}", style="primary")],
+        [InlineKeyboardButton(text="↗  Check on Fragment", url=f"https://fragment.com/username/{username}")],
+        [InlineKeyboardButton(text="⎋  Back to Lengths", callback_data="gen_back_to_lengths", style="danger")]
     ])
 
 # --- ХЕНДЛЕРИ ---
@@ -168,26 +160,26 @@ def result_kb(username: str):
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 Welcome! This bot helps you generate and find available Telegram usernames.\n\n"
-        "Please select an option below:",
+        "r3gistry  |  @r3gistrybot\n\n"
+        "Minimalist intelligence core for Telegram usernames and brand tracking.\n"
+        "Select an action below:",
         reply_markup=main_menu_kb()
     )
 
 @router.callback_query(F.data == "menu_main")
 async def cb_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("Main Menu:", reply_markup=main_menu_kb())
+    await callback.message.edit_text("R 3 G I S T R Y  //  CORE\n\nSelect an action below:", reply_markup=main_menu_kb())
     await callback.answer()
 
 @router.callback_query(F.data == "menu_generate")
 async def cb_generate_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
-        "⚙️ Choose generation mode:\n\n"
-        "• *Symmetric Search* — mirrored aesthetics (e.g., `abba`, `xyyx`).\n"
-        "• *With / Without Digits* — random combinations.",
-        reply_markup=generation_modes_kb(),
-        parse_mode="Markdown"
+        "MODE // SELECTION\n\n"
+        "• Symmetric — mirrored aesthetics (e.g., abba).\n"
+        "• Digits / No Digits — algorithmic generation.",
+        reply_markup=generation_modes_kb()
     )
     await callback.answer()
 
@@ -197,7 +189,7 @@ async def cb_handle_mode(callback: CallbackQuery, state: FSMContext):
     await state.update_data(mode=mode_type)
     
     await callback.message.edit_text(
-        "📏 Choose maximum length of the username (5 to 8 characters):",
+        "Length | Selection\n\nChoose target length (5 to 8 characters):",
         reply_markup=length_kb()
     )
     await callback.answer()
@@ -205,7 +197,7 @@ async def cb_handle_mode(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "gen_back_to_lengths")
 async def cb_back_to_lengths(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "📏 Choose maximum length of the username (5 to 8 characters):",
+        "LENGTH // SELECTION\n\nChoose target length (5 to 8 characters):",
         reply_markup=length_kb()
     )
     await callback.answer()
@@ -217,12 +209,12 @@ async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
     mode_type = data.get("mode", "digits")
     
     await state.update_data(length=length)
-    await callback.message.edit_text("⏳ Searching for a free username...")
+    await callback.message.edit_text("⏱  Scanning registry...")
     
     with_digits = (mode_type == "digits" or mode_type == "symmetric")
     username = await find_free_username(mode_type, length, with_digits)
     
-    status_text = "✅ Available"
+    status_text = "Available"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     async with aiosqlite.connect(DB_NAME) as db:
@@ -233,10 +225,10 @@ async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
         await db.commit()
 
     await callback.message.edit_text(
-        f"🔍 Found Free Username:\n\n"
-        f"🔹 `@{username}`\n"
-        f"📊 Status: *{status_text}*\n\n"
-        f"Choose next action:",
+        f" Result | Found\n\n"
+        f"• @`{username}`\n"
+        f"• Status: {status_text}\n\n"
+        f"Select next step:",
         reply_markup=result_kb(username),
         parse_mode="Markdown"
     )
@@ -248,12 +240,12 @@ async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
     mode_type = data.get("mode", "digits")
     length = data.get("length", 5)
     
-    await callback.message.edit_text("⏳ Searching for another free username...")
+    await callback.message.edit_text("⏱  Scanning registry...")
     
     with_digits = (mode_type == "digits" or mode_type == "symmetric")
     username = await find_free_username(mode_type, length, with_digits)
     
-    status_text = "✅ Available"
+    status_text = "Available"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     async with aiosqlite.connect(DB_NAME) as db:
@@ -264,10 +256,10 @@ async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
         await db.commit()
 
     await callback.message.edit_text(
-        f"🔍 Found Free Username:\n\n"
-        f"🔹 `@{username}`\n"
-        f"📊 Status: *{status_text}*\n\n"
-        f"Choose next action:",
+        f"Result | Found\n\n"
+        f"• @`{username}`\n"
+        f"• Status: {status_text}\n\n"
+        f"Select next step:",
         reply_markup=result_kb(username),
         parse_mode="Markdown"
     )
@@ -286,7 +278,7 @@ async def cb_save_username(callback: CallbackQuery):
         )
         await db.commit()
         
-    await callback.answer(f"✅ Username @{username} successfully saved!", show_alert=True)
+    await callback.answer(f"Saved: @{username}", show_alert=True)
 
 @router.callback_query(F.data == "menu_history")
 async def cb_history(callback: CallbackQuery):
@@ -299,16 +291,16 @@ async def cb_history(callback: CallbackQuery):
             rows = await cursor.fetchall()
             
     if not rows:
-        text = "📜 Your generation history is empty."
+        text = "History | Empty\n\nNo records found."
     else:
-        text = "📜 *Recent Checked Usernames:*\n\n"
+        text = "History | Recent\n\n"
         for uname, status, date in rows:
-            text += f"• `@{uname}` — {status} _({date})_\n"
+            text += f"• @{uname} — {status} ({date})\n"
             
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text="⎋  Main Menu", callback_data="menu_main", style="danger")]
     ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 @router.callback_query(F.data == "menu_saved")
@@ -322,29 +314,28 @@ async def cb_saved(callback: CallbackQuery):
             rows = await cursor.fetchall()
             
     if not rows:
-        text = "⭐ You haven't saved any usernames yet."
+        text = "Saved | Empty\n\nNo saved items."
     else:
-        text = "⭐ *Your Saved Usernames:*\n\n"
+        text = "Saved | List\n\n"
         for uname, saved_at in rows:
-            text += f"• `@{uname}` (Saved: {saved_at})\n"
+            text += f"• @{uname} [{saved_at}]\n"
             
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text="⎋  Main Menu", callback_data="menu_main", style="danger")]
     ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 @router.callback_query(F.data == "menu_monitor")
 async def cb_monitor_menu(callback: CallbackQuery, state: FSMContext):
     await state.set_state(MonitorState.waiting_for_username)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Cancel", callback_data="menu_main", style="danger")]
+        [InlineKeyboardButton(text="⎋  Cancel", callback_data="menu_main", style="danger")]
     ])
     await callback.message.edit_text(
-        "👁 **Monitor Taken Username**\n\n"
-        "Send me the username (with or without `@`) that you want to track. If it becomes available, I will notify you!",
-        reply_markup=kb,
-        parse_mode="Markdown"
+        "Monitor | Target\n\n"
+        "Send target username to track releases:",
+        reply_markup=kb
     )
     await callback.answer()
 
@@ -352,7 +343,7 @@ async def cb_monitor_menu(callback: CallbackQuery, state: FSMContext):
 async def process_monitor_input(message: Message, state: FSMContext):
     username = message.text.strip().lstrip("@")
     if not re.match(r"^[a-zA-Z0-9_]{5,}$", username):
-        await message.answer("❌ Invalid username format. It must contain only Latin letters, numbers, and underscores (at least 5 characters). Try again:")
+        await message.answer("Invalid format. Use latin letters, numbers, underscores (min 5 chars):")
         return
         
     async with aiosqlite.connect(DB_NAME) as db:
@@ -364,11 +355,10 @@ async def process_monitor_input(message: Message, state: FSMContext):
         
     await state.clear()
     await message.answer(
-        f"✅ You have successfully added `@{username}` to the monitoring list!\nI will check its status periodically.",
+        f"Target @{username} added to monitoring queue.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main", style="danger")]
-        ]),
-        parse_mode="Markdown"
+            [InlineKeyboardButton(text="⎋  Main Menu", callback_data="menu_main", style="danger")]
+        ])
     )
 
 async def background_monitoring(bot: Bot):
@@ -384,22 +374,20 @@ async def background_monitoring(bot: Bot):
                         try:
                             await bot.send_message(
                                 user_id,
-                                f"🎉 **ATTENTION! Username is now available!**\n\n"
-                                f"🔹 `@{username}` is free! Claim it quickly!",
-                                parse_mode="Markdown"
+                                f"ALERT // RELEASE\n\nTarget @{username} is now available!"
                             )
                             await db.execute("DELETE FROM monitoring WHERE id = ?", (row_id,))
                             await db.commit()
-                        except Exception as e:
-                            logging.error(f"Failed to send notification: {e}")
-        except Exception as e:
-            logging.error(f"Monitoring error: {e}")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
             
         await asyncio.sleep(300)
 
 async def main():
     if not aiosqlite_available:
-        print("Warning: aiosqlite library is missing.")
+        print("Warning: aiosqlite missing.")
         return
         
     await init_db()
@@ -411,8 +399,9 @@ async def main():
     asyncio.create_task(background_monitoring(bot))
     
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Bot successfully started!")
+    print("Core online.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
