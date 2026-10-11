@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import random
@@ -391,7 +392,7 @@ async def main():
         return
         
     await init_db()
-    bot = Bot(token=TOKEN)
+    TOKEN = os.getenv("BOT_TOKEN")
     dp = Dispatcher()
     
     dp.include_router(router)
