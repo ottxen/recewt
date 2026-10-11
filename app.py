@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
-MAX_SEARCH_ATTEMPTS = 20
+MAX_SEARCH_ATTEMPTS = 40
 PAGE_SIZE = 10
 
 DEFAULT_WORDS = [
@@ -78,76 +78,63 @@ def valid_username(value: str) -> bool:
     )
 
 
+# Англомовні бази для красивої генерації
+ENGLISH_PREFIXES = ["get", "the", "my", "im", "real", "club", "team", "core"]
+ENGLISH_SUFFIXES = ["hq", "io", "ai", "app", "net", "lab", "hub", "pro"]
+
 def make_username(length, digits, underscore, words):
-    alphabet = "abcdefghijklmnopqrstuvwxyz"
-
-    if digits != "without":
-        alphabet += "0123456789"
-
+    # Якщо вибрані ключові слова користувачем
     if words:
-        word = re.sub(
-            r"[^a-zA-Z0-9]", "", random.choice(words)
-        ).lower()
+        word = random.choice(words).lower()
+        choice_type = random.randint(1, 4)
+        
+        if choice_type == 1:
+            username = f"{random.choice(ENGLISH_PREFIXES)}_{word}"
+        elif choice_type == 2:
+            username = f"{word}_{random.choice(ENGLISH_SUFFIXES)}"
+        elif choice_type == 3:
+            username = f"{word}{random.randint(10, 999)}"
+        else:
+            username = f"{word}"
+            
+        return username[:32]
 
-        if not word:
-            word = "user"
-
-        if not word[0].isalpha():
-            word = "user" + word
-
-        word = word[:30]
-
-        minimum = max(12, len(word))
-        if underscore == "with":
-            minimum = max(minimum, len(word) + 1)
-        if digits == "with" and not any(c.isdigit() for c in word):
-            minimum = max(minimum, len(word) + 1)
-
-        target = random.randint(minimum, min(32, max(minimum, 16)))
-        target = min(32, max(target, len(word)))
-
-        username = word
-
-        while len(username) < target:
-            username += random.choice(alphabet)
-
-        if underscore == "with" and "_" not in username:
-            username = username[:1] + "_" + username[2:]
-
-        elif underscore == "either" and random.random() < 0.35:
-            position = random.randrange(1, len(username))
-            username = username[:position] + "_" + username[position + 1:]
-
-        if digits == "with" and not any(c.isdigit() for c in username):
-            position = random.randrange(1, len(username))
-            username = (
-                username[:position]
-                + random.choice("0123456789")
-                + username[position + 1:]
-            )
-
-        return username
-
-    length = int(length)
-    chars = [random.choice("abcdefghijklmnopqrstuvwxyz")]
-
-    chars.extend(
-        random.choice(alphabet)
-        for _ in range(length - 1)
-    )
-
-    if digits == "with" and not any(c.isdigit() for c in chars):
-        pos = random.randrange(1, length)
-        chars[pos] = random.choice("0123456789")
-
-    if underscore == "with":
-        pos = random.randrange(1, length)
-        chars[pos] = "_"
-    elif underscore == "either" and random.random() < 0.35:
-        pos = random.randrange(1, length)
-        chars[pos] = "_"
-
-    return "".join(chars)
+    # Генерація красивих англомовних комбінацій для заданої довжини
+    if length == "12plus":
+        prefix = random.choice(ENGLISH_PREFIXES)
+        suffix = random.choice(ENGLISH_SUFFIXES)
+        random_part = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=random.randint(4, 8)))
+        
+        style = random.randint(1, 3)
+        if style == 1:
+            username = f"{prefix}_{random_part}"
+        elif style == 2:
+            username = f"{random_part}_{suffix}"
+        else:
+            username = f"{prefix}{random_part}{suffix}"
+            
+        return username[:32]
+    
+    # Для меншої довжини генеруємо лаконічніші звучні комбінації
+    consonants = "bcdfghjklmnpqrstvwxyz"
+    vowels = "aeiou"
+    
+    length_int = int(length)
+    username = ""
+    for i in range(length_int):
+        if i % 2 == 0:
+            username += random.choice(consonants)
+        else:
+            username += random.choice(vowels)
+            
+    if underscore == "with" or (underscore == "either" and random.random() < 0.4):
+        pos = random.randint(1, length_int - 2)
+        username = username[:pos] + "_" + username[pos+1:]
+        
+    if digits == "with" or (digits == "either" and random.random() < 0.3):
+        username += str(random.randint(10, 99))
+        
+    return username[:32] 
 
 
 def length_keyboard():
