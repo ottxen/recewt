@@ -24,15 +24,16 @@ SUFFIXES = ["ly", "io", "ify", "r", "q", "x", "z"]
 class GeneratorStates(StatesGroup):
     waiting_for_mutation_word = State()
 
+# --- Головне меню з кольоровими кнопками ---
 def get_main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔍 Direct Search", callback_data="cmd_direct"),
-                InlineKeyboardButton(text="🧩 Brand Combine", callback_data="cmd_combine")
+                InlineKeyboardButton(text="🔍 Direct Search", callback_data="cmd_direct", style="success"),
+                InlineKeyboardButton(text="🧩 Brand Combine", callback_data="cmd_combine", style="primary")
             ],
             [
-                InlineKeyboardButton(text="⚡ Word Mutate", callback_data="cmd_mutate"),
+                InlineKeyboardButton(text="⚡ Word Mutate", callback_data="cmd_mutate", style="primary"),
                 InlineKeyboardButton(text="👁 Monitor", callback_data="cmd_monitor")
             ],
             [
@@ -44,7 +45,7 @@ def get_main_menu():
 def get_back_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu", style="danger")]
         ]
     )
 
@@ -96,8 +97,8 @@ async def mode_combine(callback: CallbackQuery):
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Generate More", callback_data="cmd_combine")],
-            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton(text="🔄 Generate More", callback_data="cmd_combine", style="success")],
+            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu", style="danger")]
         ]
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -138,7 +139,7 @@ async def process_mutation(message: Message, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu")]
+            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu", style="danger")]
         ]
     )
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
@@ -172,4 +173,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
