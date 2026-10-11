@@ -1,14 +1,18 @@
 import asyncio
-import datetime
 import logging
-import os
 import random
-import sqlite3
-import string
-import sys
-from urllib.parse import urlparse
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandStart
+import re
+from datetime import datetime
+
+aiosqlite_available = True
+try:
+    import aiosqlite
+except ImportError:
+    aiosqlite_available = False
+
+import aiohttp
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -17,348 +21,387 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-import cv2
 
-TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+TOKEN = "YOUR_BOT_TOKEN"
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+router = Router()
+DB_NAME = "bot_database.db"
+
+# State for monitoring a taken username
+class MonitorState(StatesGroup):
+    waiting_for_username = State()
 
 # --- DATABASE SETUP ---
-def init_db():
-    conn = sqlite3.connect("secur3ty.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS saved_passwords (
-            user_id INTEGER,
-            password TEXT,
-            saved_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        # History table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                status TEXT,
+                created_at TEXT
+            )
+        """)
+        # Saved usernames table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS saved_usernames (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                saved_at TEXT
+            )
+        """)
+        # Monitoring table
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS monitoring (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT
+            )
+        """)
+        await db.commit()
 
-def save_password_db(user_id: int, password: str):
-    conn = sqlite3.connect("secur3ty.db")
-    cursor = conn.cursor()
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    cursor.execute("INSERT INTO saved_passwords (user_id, password, saved_at) VALUES (?, ?, ?)", (user_id, password, now))
-    conn.commit()
-    conn.close()
-
-def get_saved_passwords_db(user_id: int):
-    conn = sqlite3.connect("secur3ty.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT password, saved_at FROM saved_passwords WHERE user_id = ? ORDER BY rowid DESC LIMIT 15", (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
-
-# --- DETAILED URL & THREAT ANALYSIS HELPER ---
-def analyze_url_deep(url: str):
-    url_lower = url.lower()
+# --- FRAGMENT CHECKER ---
+async def check_username_on_fragment(username: str) -> str:
+    """
+    Checks username status via Fragment.
+    Returns: 'free', 'taken', 'fragment_available', or 'error'
+    """
+    clean_username = username.lstrip("@").lower()
+    url = f"https://fragment.com/username/{clean_username}"
     
-    # Check for stuffed or multiple concatenated links
-    if url_lower.count("http://") > 1 or url_lower.count("https://") > 1 or "http" in url_lower[5:]:
-        return (
-            "<b>target domain:</b> <code>multiple / malformed urls detected</code>\n"
-            "<b>security status:</b> <b>high risk ❌ (url obfuscation detected)</b>\n\n"
-            "<i>warning: this link contains merged or hidden urls designed to disguise its real destination.</i>"
-        )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=10) as response:
+                if response.status != 200:
+                    return "error"
+                html = await response.text()
+                
+                if "is available" in html or "available-box" in html:
+                    return "free"
+                elif "is taken" in html or "Auction closed" in html or "Sold for" in html:
+                    return "taken"
+                elif "Available" in html and "Telegram" in html:
+                    return "fragment_available"
+                
+                if "t.me/" in html and "unavailable" not in html:
+                    return "taken"
+                
+                if "js-unavailability-reason" in html:
+                    return "taken"
+                return "free"
+    except Exception as e:
+        logging.error(f"Fragment check error: {e}")
+        return "error"
 
-    if not url.startswith(("http://", "https://")):
-        full_url = "http://" + url
+# --- USERNAME GENERATOR ---
+def generate_symmetric(length: int = 5) -> str:
+    chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    half_len = length // 2
+    is_odd = length % 2 != 0
+    
+    half = ''.join(random.choice(chars) for _ in range(half_len))
+    middle = random.choice(chars) if is_odd else ""
+    
+    if is_odd:
+        full = half + middle + half[::-1]
     else:
-        full_url = url
+        full = half + half[::-1]
+    return full
 
-    parsed = urlparse(full_url)
-    domain = parsed.netloc or parsed.path.split('/')[0]
-    path = parsed.path
-    query = parsed.query
+def generate_random(length: int, with_digits: bool) -> str:
+    chars = "abcdefghijklmnopqrstuvwxyz0123456789" if with_digits else "abcdefghijklmnopqrstuvwxyz"
+    return ''.join(random.choice(chars) for _ in range(length))
 
-    # Threat and payload keyword matching
-    danger_words = ["virus", "cure", "hack", "stealer", "grabber", "bot", "token", "payload", "malware", "exploit"]
-    has_danger_words = any(word in url_lower for word in danger_words)
-    is_trusted_domain = any(trusted in domain.lower() for trusted in ["icloud.com", "apple.com", "google.com", "t.me"])
-    
-    risk_status = "safe & clean ✅"
-    if has_danger_words or "@" in url or len(query) > 80:
-        risk_status = "high risk / potential exploit ❌"
-        if is_trusted_domain:
-            risk_status = "high risk ❌ (trusted domain abused for payload delivery)"
+async def find_free_username(mode: str, length: int = 5, with_digits: bool = True) -> str:
+    attempts = 0
+    while attempts < 15:
+        attempts += 1
+        if mode == "symmetric":
+            uname = generate_symmetric(length)
+        else:
+            uname = generate_random(length, with_digits)
+            
+        status = await check_username_on_fragment(uname)
+        if status == "free":
+            return uname
+    return uname
 
-    clean_url = url.split("?")[0]
-
-    report = (
-        f"• <b>target domain:</b> <code>{domain}</code>\n"
-        f"• <b>endpoint path:</b> <code>{path if path else '/'}</code>\n"
-        f"• <b>protocol check:</b> <code>{'valid' if parsed.scheme in ['http', 'https'] else 'malformed ⚠️'}</code>\n"
-        f"• <b>clean url:</b> <code>{clean_url}</code>\n\n"
-        f"<b>security status:</b> <b>{risk_status}</b>"
-    )
-    
-    if has_danger_words or "@" in url:
-        report += "\n\n<i>warning: suspicious markers found in parameters or link structure.</i>"
-        
-    return report
-
-# --- FSM STATES ---
-class ToolStates(StatesGroup):
-    waiting_for_url = State()
-
-# --- MAIN KEYBOARD ---
-def get_main_menu():
+# --- KEYBOARDS (VERTICAL LAYOUT) ---
+def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔗 check url safety", callback_data="tool_url"),
-         InlineKeyboardButton(text="📷 scan qr code", callback_data="tool_qr")],
-        [InlineKeyboardButton(text="🛡 file inspector", callback_data="tool_file"),
-         InlineKeyboardButton(text="🔑 password manager", callback_data="tool_pass")],
-        [InlineKeyboardButton(text="ℹ️ about secur3tybot", callback_data="tool_about")]
+        [InlineKeyboardButton(text="🔍 Generate Usernames", callback_data="menu_generate")],
+        [InlineKeyboardButton(text="📜 Generation History", callback_data="menu_history")],
+        [InlineKeyboardButton(text="⭐ Saved Usernames", callback_data="menu_saved")],
+        [InlineKeyboardButton(text="👁 Monitor Username", callback_data="menu_monitor")]
     ])
 
-def get_back_keyboard():
+def generation_modes_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
+        [InlineKeyboardButton(text="🪞 Symmetric Search", callback_data="gen_mode_symmetric")],
+        [InlineKeyboardButton(text="🔠 With Digits", callback_data="gen_mode_digits")],
+        [InlineKeyboardButton(text="🔤 Without Digits", callback_data="gen_mode_nodigits")],
+        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main")]
     ])
 
-# --- START COMMAND ---
-@dp.message(CommandStart())
+def result_kb(username: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Try Again", callback_data="gen_repeat")],
+        [InlineKeyboardButton(text="💾 Save Username", callback_data=f"save_{username}")],
+        [InlineKeyboardButton(text="📤 Share to Chat", switch_inline_query=f"@{username}")],
+        [InlineKeyboardButton(text="⬅️ Back to Modes", callback_data="menu_generate")]
+    ])
+
+# --- HANDLERS ---
+
+@router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    text = (
-        "<b>secur3tybot // system</b>\n\n"
-        "welcome to your digital security toolkit.\n"
-        "select a tool below to begin:"
+    await message.answer(
+        "👋 Welcome! This bot helps you generate, search, and monitor available Telegram usernames via Fragment.\n\n"
+        "Please select an option below:",
+        reply_markup=main_menu_kb()
     )
-    await message.answer(text, reply_markup=get_main_menu(), parse_mode="HTML")
 
-@dp.callback_query(F.data == "menu_back")
-async def back_to_main(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "menu_main")
+async def cb_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    text = (
-        "<b>secur3tybot // system</b>\n\n"
-        "main menu. select a tool:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_main_menu(), parse_mode="HTML")
+    await callback.message.edit_text("Main Menu:", reply_markup=main_menu_kb())
     await callback.answer()
 
-@dp.callback_query(F.data == "tool_about")
-async def about_bot(callback: CallbackQuery):
-    text = (
-        "<b>about secur3tybot</b>\n\n"
-        "minimalist digital security utility:\n"
-        "• deep url & payload analysis\n"
-        "• qr code decoder with link verification\n"
-        "• file extension & threat inspector\n"
-        "• password generator & private vault\n\n"
-        "<i>stay safe online.</i>"
+@router.callback_query(F.data == "menu_generate")
+async def cb_generate_menu(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "⚙️ Choose generation mode:\n\n"
+        "• *Symmetric Search* — mirrored aesthetics (e.g., `abba`, `xyyx`).\n"
+        "• *With / Without Digits* — random combinations.",
+        reply_markup=generation_modes_kb(),
+        parse_mode="Markdown"
     )
-    await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
     await callback.answer()
 
-# --- 1. URL SAFETY CHECKER ---
-@dp.callback_query(F.data == "tool_url")
-async def url_tool_start(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(ToolStates.waiting_for_url)
-    text = (
-        "<b>url safety checker</b>\n\n"
-        "send or paste the url you want to inspect:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@dp.message(ToolStates.waiting_for_url, F.text)
-async def process_url_check(message: Message, state: FSMContext):
-    url = message.text.strip()
-    analysis_result = analyze_url_deep(url)
+@router.callback_query(F.data.startswith("gen_mode_"))
+async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
+    mode_type = callback.data.split("_")[2]
+    await state.update_data(mode=mode_type)
     
-    text = (
-        f"<b>url analysis report</b>\n\n"
-        f"input: <code>{url[:50]}...</code>\n\n"
-        f"{analysis_result}"
-    )
+    await callback.message.edit_text("⏳ Searching for an available username via Fragment...")
     
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔍 check another url", callback_data="tool_url")],
-        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
-    ])
-    
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-    await state.clear()
-
-# --- 2. QR CODE SCANNER ---
-@dp.callback_query(F.data == "tool_qr")
-async def qr_tool_start(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = (
-        "<b>qr code scanner</b>\n\n"
-        "send an image containing a qr code as a photo to decode and analyze its target:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@dp.message(F.photo)
-async def process_qr_photo(message: Message):
-    photo = message.photo[-1]
-    file_info = await bot.get_file(photo.file_id)
-    file_bytes = await bot.download_file(file_info.file_path)
-    
-    temp_path = f"temp_{message.from_user.id}.jpg"
-    with open(temp_path, "wb") as f:
-        f.write(file_bytes.read() if hasattr(file_bytes, "read") else file_bytes)
-        
-    try:
-        img = cv2.imread(temp_path)
-        detector = cv2.QRCodeDetector()
-        qr_data, _, _ = detector.detectAndDecode(img)
-        
-        if not qr_data:
-            text = "<b>qr scan result</b>\n\nno qr code detected in this image. try uploading a clearer image."
-        else:
-            if "." in qr_data and " " not in qr_data:
-                link_analysis = analyze_url_deep(qr_data)
-                text = (
-                    f"<b>qr code decoded & analyzed</b>\n\n"
-                    f"raw content:\n<code>{qr_data}</code>\n\n"
-                    f"<b>destination report:</b>\n{link_analysis}"
-                )
-            else:
-                text = (
-                    f"<b>qr code decoded</b>\n\n"
-                    f"content:\n<code>{qr_data}</code>\n\n"
-                    f"<i>type: plain text format (safe)</i>"
-                )
-    except Exception:
-        text = "<b>error</b>\n\ncould not process the image. please try another file."
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-            
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
-    ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-
-# --- 3. FILE INSPECTOR ---
-@dp.callback_query(F.data == "tool_file")
-async def file_tool_start(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = (
-        "<b>file inspector</b>\n\n"
-        "send any file or document to inspect its format, extension, and risk profile:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
-    await callback.answer()
-
-@dp.message(F.document | F.audio | F.video)
-async def process_file_inspection(message: Message):
-    document = message.document or message.audio or message.video
-    file_name = getattr(document, "file_name", "unknown_file")
-    file_size = getattr(document, "file_size", 0)
-    mime_type = getattr(document, "mime_type", "application/octet-stream")
-    
-    ext = file_name.split(".")[-1].lower() if "." in file_name else ""
-    
-    dangerous_extensions = ["exe", "scr", "bat", "cmd", "js", "vbs", "pif", "msi", "jar", "apk"]
-    warning_extensions = ["zip", "rar", "7z", "iso", "docm", "xlsm"]
-    
-    risk_level = "safe standard format ✅"
-    if ext in dangerous_extensions:
-        risk_level = "high risk ❌ (executable / script format)"
-    elif ext in warning_extensions:
-        risk_level = "moderate warning ⚠️ (compressed container)"
-        
-    size_mb = round(file_size / (1024 * 1024), 2)
-    
-    text = (
-        f"<b>file inspection report</b>\n\n"
-        f"• file name: <code>{file_name}</code>\n"
-        f"• size: <code>{size_mb} mb</code>\n"
-        f"• mime type: <code>{mime_type}</code>\n"
-        f"• extension: <code>.{ext}</code>\n\n"
-        f"<b>security assessment:</b> <b>{risk_level}</b>"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
-    ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-
-# --- 4. PASSWORD MANAGER & GENERATOR ---
-@dp.callback_query(F.data == "tool_pass")
-async def password_manager_menu(callback: CallbackQuery):
-    text = (
-        "<b>password manager</b>\n\n"
-        "generate secure credentials or manage saved keys in your vault:"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ generate new password", callback_data="gen_password")],
-        [InlineKeyboardButton(text="📁 view saved passwords", callback_data="view_saved_passes")],
-        [InlineKeyboardButton(text="← main menu", callback_data="menu_back")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-    await callback.answer()
-
-@dp.callback_query(F.data == "gen_password")
-async def generate_password_action(callback: CallbackQuery):
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
-    password = "".join(random.choices(chars, k=16))
-    
-    text = (
-        "<b>generated password</b>\n\n"
-        f"<code>{password}</code>\n\n"
-        "<i>tap code to copy, or select an option:</i>"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💾 save to vault", callback_data=f"save_pass_{password}"),
-         InlineKeyboardButton(text="📤 send to chat", callback_data=f"send_pass_{password}")],
-        [InlineKeyboardButton(text="🔄 generate another", callback_data="gen_password")],
-        [InlineKeyboardButton(text="← password menu", callback_data="tool_pass")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("save_pass_"))
-async def save_password_callback(callback: CallbackQuery):
-    password = callback.data.replace("save_pass_", "")
-    user_id = callback.from_user.id
-    save_password_db(user_id, password)
-    await callback.answer("✅ password saved to your vault!", show_alert=True)
-
-@dp.callback_query(F.data.startswith("send_pass_"))
-async def send_password_callback(callback: CallbackQuery):
-    password = callback.data.replace("send_pass_", "")
-    await callback.message.answer(f"🔑 password:\n<code>{password}</code>", parse_mode="HTML")
-    await callback.answer("sent to chat!")
-
-@dp.callback_query(F.data == "view_saved_passes")
-async def view_saved_passwords(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    rows = get_saved_passwords_db(user_id)
-    
-    if not rows:
-        text = "<b>saved passwords vault</b>\n\nyour vault is currently empty."
+    if mode_type == "symmetric":
+        username = await find_free_username("symmetric", length=5)
+    elif mode_type == "digits":
+        username = await find_free_username("random", length=5, with_digits=True)
     else:
-        pass_list = "\n".join([f"• <code>{item[0]}</code> — <i>{item[1]}</i>" for item in rows])
-        text = f"<b>saved passwords vault</b>\n\n{pass_list}"
+        username = await find_free_username("random", length=5, with_digits=False)
         
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="← password menu", callback_data="tool_pass")]
-    ])
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    status = await check_username_on_fragment(username)
+    status_text = "✅ Available" if status == "free" else ("🛒 Available on Fragment" if status == "fragment_available" else "❌ Taken")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
+            (callback.from_user.id, username, status_text, now_str)
+        )
+        await db.commit()
+
+    await callback.message.edit_text(
+        f"🔍 Found Username:\n\n"
+        f"🔹 `@{username}`\n"
+        f"📊 Status: *{status_text}*\n\n"
+        f"Choose next action:",
+        reply_markup=result_kb(username),
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
+@router.callback_query(F.data == "gen_repeat")
+async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mode_type = data.get("mode", "digits")
+    
+    await callback.message.edit_text("⏳ Searching for another available username...")
+    
+    if mode_type == "symmetric":
+        username = await find_free_username("symmetric", length=5)
+    elif mode_type == "digits":
+        username = await find_free_username("random", length=5, with_digits=True)
+    else:
+        username = await find_free_username("random", length=5, with_digits=False)
+        
+    status = await check_username_on_fragment(username)
+    status_text = "✅ Available" if status == "free" else ("🛒 Available on Fragment" if status == "fragment_available" else "❌ Taken")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
+            (callback.from_user.id, username, status_text, now_str)
+        )
+        await db.commit()
+
+    await callback.message.edit_text(
+        f"🔍 Found Username:\n\n"
+        f"🔹 `@{username}`\n"
+        f"📊 Status: *{status_text}*\n\n"
+        f"Choose next action:",
+        reply_markup=result_kb(username),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("save_"))
+async def cb_save_username(callback: CallbackQuery):
+    username = callback.data.split("_")[1]
+    user_id = callback.from_user.id
+    saved_at = datetime.now().strftime("%H:%M - %d.%m.%Y")
+    
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO saved_usernames (user_id, username, saved_at) VALUES (?, ?, ?)",
+            (user_id, username, saved_at)
+        )
+        await db.commit()
+        
+    await callback.answer(f"✅ Username @{username} successfully saved!", show_alert=True)
+
+@router.callback_query(F.data == "menu_history")
+async def cb_history(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT username, status, created_at FROM history WHERE user_id = ? ORDER BY id DESC LIMIT 10",
+            (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            
+    if not rows:
+        text = "📜 Your generation history is empty."
+    else:
+        text = "📜 *Recent Checked Usernames:*\n\n"
+        for uname, status, date in rows:
+            text += f"• `@{uname}` — {status} _({date})_\n"
+            
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+@router.callback_query(F.data == "menu_saved")
+async def cb_saved(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT username, saved_at FROM saved_usernames WHERE user_id = ? ORDER BY id DESC",
+            (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            
+    if not rows:
+        text = "⭐ You haven't saved any usernames yet."
+    else:
+        text = "⭐ *Your Saved Usernames:*\n\n"
+        for uname, saved_at in rows:
+            text += f"• `@{uname}` (Saved: {saved_at})\n"
+            
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+@router.callback_query(F.data == "menu_monitor")
+async def cb_monitor_menu(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(MonitorState.waiting_for_username)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Cancel", callback_data="menu_main")]
+    ])
+    await callback.message.edit_text(
+        "👁 **Monitor Taken Username**\n\n"
+        "Send me the username (with or without `@`) that you want to track. If it becomes available, I will notify you!",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@router.message(MonitorState.waiting_for_username)
+async def process_monitor_input(message: Message, state: FSMContext):
+    username = message.text.strip().lstrip("@")
+    if not re.match(r"^[a-zA-Z0-9_]{5,}$", username):
+        await message.answer("❌ Invalid username format. It must contain only Latin letters, numbers, and underscores (at least 5 characters). Try again:")
+        return
+        
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO monitoring (user_id, username) VALUES (?, ?)",
+            (message.from_user.id, username)
+        )
+        await db.commit()
+        
+    await state.clear()
+    await message.answer(
+        f"✅ You have successfully added `@{username}` to the monitoring list!\nI will check its status periodically.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu_main")]
+        ]),
+        parse_mode="Markdown"
+    )
+
+# --- BACKGROUND MONITORING TASK ---
+async def background_monitoring(bot: Bot):
+    while True:
+        try:
+            async with aiosqlite.connect(DB_NAME) as db:
+                async with db.execute("SELECT id, user_id, username FROM monitoring") as cursor:
+                    rows = await cursor.fetchall()
+                    
+                for row_id, user_id, username in rows:
+                    status = await check_username_on_fragment(username)
+                    if status in ["free", "fragment_available"]:
+                        try:
+                            await bot.send_message(
+                                user_id,
+                                f"🎉 **ATTENTION! Username is now available!**\n\n"
+                                f"🔹 `@{username}` is free (Status: {status})! Claim it quickly!",
+                                parse_mode="Markdown"
+                            )
+                            await db.execute("DELETE FROM monitoring WHERE id = ?", (row_id,))
+                            await db.commit()
+                        except Exception as e:
+                            logging.error(f"Failed to send notification to user {user_id}: {e}")
+                            
+        except Exception as e:
+            logging.error(f"Background monitoring error: {e}")
+            
+        await asyncio.sleep(300)
+
+# --- BOT RUNNER ---
 async def main():
-    init_db()
-    logging.basicConfig(level=logging.INFO)
-    print("secur3tybot is online and running!")
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
+    if not aiosqlite_available:
+        print("Warning: aiosqlite library is missing. Install it via pip install aiosqlite")
+        return
+        
+    await init_db()
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+    
+    dp.include_router(router)
+    
+    asyncio.create_task(background_monitoring(bot))
+    
+    await bot.delete_webhook(drop_pending_updates=True)
+    print("Bot successfully started!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
-            
+        
