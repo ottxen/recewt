@@ -95,7 +95,6 @@ async def check_username_availability(username: str) -> bool:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=4, allow_redirects=True) as response:
                 html = await response.text()
-                # Якщо сторінка вказує, що юзернейм вільний (немає інформації про профіль/канал)
                 if "If you have Telegram, you can contact" not in html and "tgme_page_extra" not in html:
                     return True
                 return False
@@ -103,19 +102,28 @@ async def check_username_availability(username: str) -> bool:
         return False
 
 async def find_free_username(length: int, with_digits: str) -> str:
-    chars_no_dig = "abcdefghijklmnopqrstuvwxyz"
+    letters = "abcdefghijklmnopqrstuvwxyz"
     chars_dig = "abcdefghijklmnopqrstuvwxyz0123456789"
-    charset = chars_dig if with_digits == 'on' else chars_no_dig
     
-    # Робимо кілька спроб знайти вільний серед згенерованих
     for _ in range(30):
-        uname = ''.join(random.choice(charset) for _ in range(length))
+        # Перший символ обов'язково літера (правила Telegram)
+        first_char = random.choice(letters)
+        
+        # Решта символів залежно від налаштувань
+        charset = chars_dig if with_digits == 'on' else letters
+        rest_chars = ''.join(random.choice(charset) for _ in range(length - 1))
+        
+        uname = first_char + rest_chars
+        
         is_free = await check_username_availability(uname)
         if is_free:
             return uname
             
-    # Якщо за 30 спроб не знайшлося ідеально вільного, повертаємо хоча б останній згенерований
-    return ''.join(random.choice(charset) for _ in range(length))
+    # Запасний варіант, якщо не знайшло ідеально вільного за ліміт спроб
+    first_char = random.choice(letters)
+    charset = chars_dig if with_digits == 'on' else letters
+    rest_chars = ''.join(random.choice(charset) for _ in range(length - 1))
+    return first_char + rest_chars
 
 # --- KEYBOARDS ---
 def main_menu_kb():
@@ -346,4 +354,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+                              
