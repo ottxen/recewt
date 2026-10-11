@@ -1,8 +1,8 @@
-import os
 import asyncio
 import logging
 import random
 import re
+import os
 from datetime import datetime
 
 aiosqlite_available = True
@@ -25,7 +25,13 @@ from aiogram.types import (
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
-TOKEN = "YOUR_BOT_TOKEN"
+
+# Reading token from environment variables
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    logging.error("❌ ERROR: BOT_TOKEN environment variable is not set!")
+    exit(1)
 
 router = Router()
 DB_NAME = "bot_database.db"
@@ -136,7 +142,7 @@ async def find_free_username(mode: str, length: int = 5, with_digits: bool = Tru
             return uname
     return uname
 
-# --- KEYBOARDS (VERTICAL LAYOUT) ---
+# --- KEYBOARDS (VERTICAL LAYOUT - ONE BUTTON PER ROW) ---
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Generate Usernames", callback_data="menu_generate")],
@@ -392,11 +398,14 @@ async def main():
         return
         
     await init_db()
-    TOKEN = os.getenv("BOT_TOKEN")
+    
+    # 1. Create bot instance FIRST
+    bot = Bot(token=TOKEN)
     dp = Dispatcher()
     
     dp.include_router(router)
     
+    # 2. Pass bot instance to background task AFTER creation
     asyncio.create_task(background_monitoring(bot))
     
     await bot.delete_webhook(drop_pending_updates=True)
