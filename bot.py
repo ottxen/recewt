@@ -1,3 +1,4 @@
+import os
 import asyncio
 import random
 import logging
@@ -7,12 +8,15 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-TOKEN = "BOT_TOKEN"
+# Беремо токен із змінної середовища BOT_TOKEN на Railway
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Error: BOT_TOKEN environment variable is not set!")
 
 router = Router()
 logging.basicConfig(level=logging.INFO)
 
-# Сучасні короткі морфеми та префікси для унікальної генерації (замість нудних заїджених списків)
+# Сучасні короткі морфеми для унікальної генерації
 PREFIXES = ["ax", "ex", "en", "om", "un", "al", "ev", "ix", "ox", "ul"]
 ROOTS = ["flux", "vibe", "aura", "shift", "loop", "sync", "pulse", "apex", "zen", "core", "mesh", "flow"]
 SUFFIXES = ["ly", "io", "ify", "r", "q", "x", "z"]
@@ -20,16 +24,15 @@ SUFFIXES = ["ly", "io", "ify", "r", "q", "x", "z"]
 class GeneratorStates(StatesGroup):
     waiting_for_mutation_word = State()
 
-# --- Головне меню з кольоровими кнопками ---
 def get_main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔍 Direct Search", callback_data="cmd_direct", style="success"),
-                InlineKeyboardButton(text="🧩 Brand Combine", callback_data="cmd_combine", style="primary")
+                InlineKeyboardButton(text="🔍 Direct Search", callback_data="cmd_direct"),
+                InlineKeyboardButton(text="🧩 Brand Combine", callback_data="cmd_combine")
             ],
             [
-                InlineKeyboardButton(text="⚡ Word Mutate", callback_data="cmd_mutate", style="primary"),
+                InlineKeyboardButton(text="⚡ Word Mutate", callback_data="cmd_mutate"),
                 InlineKeyboardButton(text="👁 Monitor", callback_data="cmd_monitor")
             ],
             [
@@ -41,11 +44,10 @@ def get_main_menu():
 def get_back_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu", style="danger")]
+            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu")]
         ]
     )
 
-# --- Стартова сторінка ---
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -63,7 +65,6 @@ async def back_to_menu(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_main_menu())
     await callback.answer()
 
-# --- 1. Прямий пошук ---
 @router.callback_query(F.data == "cmd_direct")
 async def mode_direct(callback: CallbackQuery):
     text = (
@@ -73,7 +74,6 @@ async def mode_direct(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_back_keyboard(), parse_mode="Markdown")
     await callback.answer()
 
-# --- 2. Динамічна генерація комбінацій ---
 @router.callback_query(F.data == "cmd_combine")
 async def mode_combine(callback: CallbackQuery):
     results = set()
@@ -96,14 +96,13 @@ async def mode_combine(callback: CallbackQuery):
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Generate More", callback_data="cmd_combine", style="success")],
-            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu", style="danger")]
+            [InlineKeyboardButton(text="🔄 Generate More", callback_data="cmd_combine")],
+            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu")]
         ]
     )
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
 
-# --- 3. Мутація слів (FSM) ---
 @router.callback_query(F.data == "cmd_mutate")
 async def mode_mutate_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(GeneratorStates.waiting_for_mutation_word)
@@ -139,12 +138,11 @@ async def process_mutation(message: Message, state: FSMContext):
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu", style="danger")]
+            [InlineKeyboardButton(text="← Back to Menu", callback_data="back_to_menu")]
         ]
     )
     await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
 
-# --- 4. Монітор та Профіль ---
 @router.callback_query(F.data == "cmd_monitor")
 async def mode_monitor(callback: CallbackQuery):
     text = (
@@ -174,4 +172,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+        
