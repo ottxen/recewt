@@ -64,64 +64,50 @@ async def init_db():
         """)
         await db.commit()
 
-# --- GENERATOR ---
-def generate_symmetric(length: int = 5) -> str:
-    chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    half_len = length // 2
-    is_odd = length % 2 != 0
-    
-    half = ''.join(random.choice(chars) for _ in range(half_len))
-    middle = random.choice(chars) if is_odd else ""
-    
-    if is_odd:
-        full = half + middle + half[::-1]
-    else:
-        full = half + half[::-1]
-    return full
+# --- ADVANCED UNIC/CLEAN GENERATOR ---
+PREFIXES = ["get", "my", "use", "try", "the", "core", "app", "io"]
+ROOTS = ["flux", "vibe", "aura", "shift", "loop", "sync", "pulse", "apex", "zen", "mesh", "flow", "nova"]
+SUFFIXES = ["hq", "io", "ai", "app", "lab", "hub"]
 
-def generate_random(length: int, with_digits: bool) -> str:
-    chars = "abcdefghijklmnopqrstuvwxyz0123456789" if with_digits else "abcdefghijklmnopqrstuvwxyz"
-    return ''.join(random.choice(chars) for _ in range(length))
-
-def get_username(mode: str, length: int, with_digits: bool) -> str:
-    if mode == "symmetric":
-        return generate_symmetric(length)
-    else:
-        return generate_random(length, with_digits)
+def generate_smart_usernames(count: int = 5) -> list:
+    results = set()
+    while len(results) < count:
+        style = random.choice([1, 2, 3])
+        if style == 1:
+            # Наприклад: fluxloop, aurasync
+            uname = random.choice(ROOTS) + random.choice(ROOTS)
+        elif style == 2:
+            # Наприклад: getvibe, tryflux
+            uname = random.choice(PREFIXES) + random.choice(ROOTS)
+        else:
+            # Наприклад: flowio, zenlab
+            uname = random.choice(ROOTS) + random.choice(SUFFIXES)
+        
+        # Додаємо трохи випадковості для унікальності
+        if random.random() > 0.5 and len(uname) < 10:
+            uname += str(random.randint(1, 99))
+            
+        results.add(uname)
+    return list(results)
 
 # --- KEYBOARDS ---
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⌕  Generate username", callback_data="menu_generate", style="success")],
+        [InlineKeyboardButton(text="⌕  Generate usernames", callback_data="menu_generate", style="success")],
         [InlineKeyboardButton(text="⏱  Check history", callback_data="menu_history")],
         [InlineKeyboardButton(text="☆  Saved names", callback_data="menu_saved")],
         [InlineKeyboardButton(text="👁  Monitor username", callback_data="menu_monitor")]
     ])
 
-def generation_modes_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=" • Symmetric search", callback_data="gen_mode_symmetric", style="success")],
-        [InlineKeyboardButton(text=" • With digits", callback_data="gen_mode_digits")],
-        [InlineKeyboardButton(text=" • Without digits", callback_data="gen_mode_nodigits")],
-        [InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")]
-    ])
-
-def length_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="5 characters", callback_data="gen_len_5")],
-        [InlineKeyboardButton(text="6 characters", callback_data="gen_len_6")],
-        [InlineKeyboardButton(text="7 characters", callback_data="gen_len_7")],
-        [InlineKeyboardButton(text="8 characters", callback_data="gen_len_8")],
-        [InlineKeyboardButton(text="⎋  Back to modes", callback_data="menu_generate", style="danger")]
-    ])
-
-def result_kb(username: str):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⟳  Generate another", callback_data="gen_repeat", style="success")],
-        [InlineKeyboardButton(text="💾  Save to favorites", callback_data=f"save_{username}")],
-        [InlineKeyboardButton(text="↗  Check in Telegram", url=f"https://t.me/{username}")],
-        [InlineKeyboardButton(text="⎋  Back to lengths", callback_data="gen_back_to_lengths", style="danger")]
-    ])
+def result_kb(usernames_list: list):
+    keyboard = []
+    # Додаємо кнопки для кожного згенерованого варіанту (щоб зберегти чи перевірити)
+    for uname in usernames_list:
+        keyboard.append([InlineKeyboardButton(text=f"💾 Save @{uname}", callback_data=f"save_{uname}")])
+    
+    keyboard.append([InlineKeyboardButton(text="⟳  Generate batch", callback_data="gen_repeat", style="success")])
+    keyboard.append([InlineKeyboardButton(text="⎋  Main menu", callback_data="menu_main", style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # --- HANDLERS ---
 
@@ -130,7 +116,7 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Welcome to R3gistry.\n\n"
-        "A clean space for discovering unique and aesthetic usernames.\n"
+        "A clean space for discovering modern brand combinations and unique usernames.\n"
         "Choose an option below:",
         reply_markup=main_menu_kb()
     )
@@ -147,89 +133,47 @@ async def cb_main(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "menu_generate")
 async def cb_generate_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text(
-        "Choose generation style:\n\n"
-        "• Symmetric — harmonious mirrored combinations.\n"
-        "• With / Without digits — random variations.",
-        reply_markup=generation_modes_kb()
-    )
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("gen_mode_"))
-async def cb_handle_mode(callback: CallbackQuery, state: FSMContext):
-    mode_type = callback.data.split("_")[2]
-    await state.update_data(mode=mode_type)
     
-    await callback.message.edit_text(
-        "Choose desired length (from 5 to 8 characters):",
-        reply_markup=length_kb()
-    )
-    await callback.answer()
-
-@router.callback_query(F.data == "gen_back_to_lengths")
-async def cb_back_to_lengths(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "Choose desired length (from 5 to 8 characters):",
-        reply_markup=length_kb()
-    )
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("gen_len_"))
-async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
-    length = int(callback.data.split("_")[2])
-    data = await state.get_data()
-    mode_type = data.get("mode", "digits")
+    usernames = generate_smart_usernames(5)
+    await state.update_data(last_batch=usernames)
     
-    await state.update_data(length=length)
-    
-    with_digits = (mode_type == "digits" or mode_type == "symmetric")
-    username = get_username(mode_type, length, with_digits)
-    
-    status_text = "Generated"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
-            (callback.from_user.id, username, status_text, now_str)
-        )
+        for uname in usernames:
+            await db.execute(
+                "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
+                (callback.from_user.id, uname, "Generated", now_str)
+            )
         await db.commit()
 
-    await callback.message.edit_text(
-        f"Generated option:\n\n"
-        f"• @`{username}`\n\n"
-        f"Choose next action:",
-        reply_markup=result_kb(username),
-        parse_mode="Markdown"
-    )
+    text = "Fresh generated username ideas:\n\n"
+    for uname in usernames:
+        text += f"• @`{uname}` — (Check in Telegram: t.me/{uname})\n"
+    text += "\nChoose an action below:"
+
+    await callback.message.edit_text(text, reply_markup=result_kb(usernames), parse_mode="Markdown")
     await callback.answer()
 
 @router.callback_query(F.data == "gen_repeat")
 async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    mode_type = data.get("mode", "digits")
-    length = data.get("length", 5)
+    usernames = generate_smart_usernames(5)
+    await state.update_data(last_batch=usernames)
     
-    with_digits = (mode_type == "digits" or mode_type == "symmetric")
-    username = get_username(mode_type, length, with_digits)
-    
-    status_text = "Generated"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
-            (callback.from_user.id, username, status_text, now_str)
-        )
+        for uname in usernames:
+            await db.execute(
+                "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
+                (callback.from_user.id, uname, "Generated", now_str)
+            )
         await db.commit()
 
-    await callback.message.edit_text(
-        f"Generated option:\n\n"
-        f"• @`{username}`\n\n"
-        f"Choose next action:",
-        reply_markup=result_kb(username),
-        parse_mode="Markdown"
-    )
+    text = "Fresh generated username ideas:\n\n"
+    for uname in usernames:
+        text += f"• @`{uname}` — (Check in Telegram: t.me/{uname})\n"
+    text += "\nChoose an action below:"
+
+    await callback.message.edit_text(text, reply_markup=result_kb(usernames), parse_mode="Markdown")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("save_"))
@@ -346,4 +290,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
