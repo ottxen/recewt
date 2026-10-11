@@ -11,7 +11,7 @@ try:
 except ImportError:
     aiosqlite_available = False
 
-from telethon import TelegramClient, functions, errors
+import aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -23,33 +23,23 @@ from aiogram.types import (
     Message,
 )
 
-# Logging configuration
+# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 
-# Reading environment variables
+# Читаємо токен бота
 TOKEN = os.getenv("BOT_TOKEN")
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-PHONE = os.getenv("PHONE")
 
-if not TOKEN or not API_ID or not API_HASH:
-    logging.error("❌ ERROR: BOT_TOKEN, API_ID or API_HASH environment variables are missing!")
+if not TOKEN:
+    logging.error("❌ ПОМИЛКА: Змінна середовища BOT_TOKEN не встановлена!")
     exit(1)
 
 router = Router()
 DB_NAME = "bot_database.db"
 
-# Initialize Telethon client for checking username availability via Telegram API
-client = TelegramClient('telegram_session', int(API_ID), API_HASH)
-
-# States for FSM
-class GenState(StatesGroup):
-    choosing_length = State()
-
 class MonitorState(StatesGroup):
     waiting_for_username = State()
 
-# --- DATABASE SETUP ---
+# --- БАЗА ДАНИХ ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
@@ -78,27 +68,37 @@ async def init_db():
         """)
         await db.commit()
 
-# --- TELEGRAM API USERNAME CHECKER (100% Accurate) ---
-async def check_username_via_telegram(username: str) -> bool:
+# --- ПЕРЕВІРКА ЮЗЕРНЕЙМУ ---
+async def check_username(username: str) -> bool:
     """
-    Перевіряє доступність юзернейму через офіційний Telegram API (Telethon).
-    Повертає True, якщо юзернейм вільний, і False, якщо зайнятий.
+    Перевіряє доступність юзернейму через публічну сторінку t.me/
     """
     clean_username = username.lstrip("@").lower()
+    url = f"https://t.me/{clean_username}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
     try:
-        result = await client(functions.account.CheckUsernameRequest(
-            username=clean_username
-        ))
-        return result  # True if available, False if taken
-    except errors.UsernameOccupiedError:
-        return False
-    except errors.UsernameInvalidError:
-        return False
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=5, allow_redirects=True) as response:
+                html = await response.text()
+                
+                # Якщо сторінка каже, що такого юзернейму не існує або він вільний для реєстрації
+                if "If you have Telegram, you can contact" not in html and "tgme_page_extra" not in html:
+                    return True
+                
+                # Додаткова перевірка за ключовими фразами в HTML
+                if "is restricted" in html or "Aberglauben" in html:
+                    return False
+                    
+                return False
     except Exception as e:
-        logging.error(f"Telethon check error for @{clean_username}: {e}")
+        logging.error(f"Помилка перевірки @{clean_username}: {e}")
         return False
 
-# --- USERNAME GENERATOR ---
+# --- ГЕНЕРАТОР ---
 def generate_symmetric(length: int = 5) -> str:
     chars = "abcdefghijklmnopqrstuvwxyz0123456789"
     half_len = length // 2
@@ -118,23 +118,22 @@ def generate_random(length: int, with_digits: bool) -> str:
     return ''.join(random.choice(chars) for _ in range(length))
 
 async def find_free_username(mode: str, length: int, with_digits: bool):
-    """Цикл генерації, поки не знайде гарантовано вільний юзернейм через Telegram API."""
     attempts = 0
-    while attempts < 50:
+    while attempts < 40:
         attempts += 1
         if mode == "symmetric":
             uname = generate_symmetric(length)
         else:
             uname = generate_random(length, with_digits)
             
-        is_free = await check_username_via_telegram(uname)
+        is_free = await check_username(uname)
         if is_free:
             return uname
-        await asyncio.sleep(0.05) # Дуже швидка перевірка без затримок
+        await asyncio.sleep(0.1)
         
     return generate_random(length, with_digits)
 
-# --- KEYBOARDS (VERTICAL LAYOUT) ---
+# --- КЛАВІАТУРИ (ВЕРТИКАЛЬНІ) ---
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Generate Usernames", callback_data="menu_generate")],
@@ -169,13 +168,13 @@ def result_kb(username: str):
         [InlineKeyboardButton(text="⬅️ Back to Lengths", callback_data="gen_back_to_lengths")]
     ])
 
-# --- HANDLERS ---
+# --- ХЕНДЛЕРИ ---
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 Welcome! This bot uses direct Telegram API to generate and find **100% free** Telegram usernames.\n\n"
+        "👋 Welcome! This bot helps you generate and find available Telegram usernames.\n\n"
         "Please select an option below:",
         reply_markup=main_menu_kb()
     )
@@ -224,15 +223,14 @@ async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
     mode_type = data.get("mode", "digits")
     
     await state.update_data(length=length)
-    
-    await callback.message.edit_text("⏳ Searching for a 100% free username...")
+    await callback.message.edit_text("⏳ Searching for a free username...")
     
     with_digits = (mode_type == "digits" or mode_type == "symmetric")
     username = await find_free_username(mode_type, length, with_digits)
     
     status_text = "✅ Available"
-
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
@@ -262,8 +260,8 @@ async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
     username = await find_free_username(mode_type, length, with_digits)
     
     status_text = "✅ Available"
-
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO history (user_id, username, status, created_at) VALUES (?, ?, ?, ?)",
@@ -379,7 +377,6 @@ async def process_monitor_input(message: Message, state: FSMContext):
         parse_mode="Markdown"
     )
 
-# --- BACKGROUND MONITORING TASK ---
 async def background_monitoring(bot: Bot):
     while True:
         try:
@@ -388,7 +385,7 @@ async def background_monitoring(bot: Bot):
                     rows = await cursor.fetchall()
                     
                 for row_id, user_id, username in rows:
-                    is_free = await check_username_via_telegram(username)
+                    is_free = await check_username(username)
                     if is_free:
                         try:
                             await bot.send_message(
@@ -400,14 +397,12 @@ async def background_monitoring(bot: Bot):
                             await db.execute("DELETE FROM monitoring WHERE id = ?", (row_id,))
                             await db.commit()
                         except Exception as e:
-                            logging.error(f"Failed to send notification to user {user_id}: {e}")
-                            
+                            logging.error(f"Failed to send notification: {e}")
         except Exception as e:
-            logging.error(f"Background monitoring error: {e}")
+            logging.error(f"Monitoring error: {e}")
             
         await asyncio.sleep(300)
 
-# --- BOT RUNNER ---
 async def main():
     if not aiosqlite_available:
         print("Warning: aiosqlite library is missing.")
@@ -415,19 +410,14 @@ async def main():
         
     await init_db()
     
-    # Start Telethon client
-    await client.start(phone=PHONE)
-    print("Telethon client successfully connected!")
-
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
     
     dp.include_router(router)
-    
     asyncio.create_task(background_monitoring(bot))
     
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Aiogram bot successfully started!")
+    print("Bot successfully started!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
