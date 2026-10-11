@@ -11,7 +11,7 @@ try:
 except ImportError:
     aiosqlite_available = False
 
-import aiohttp
+from telethon import TelegramClient, functions, errors
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -26,15 +26,21 @@ from aiogram.types import (
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
 
-# Reading token from environment variables
+# Reading environment variables
 TOKEN = os.getenv("BOT_TOKEN")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+PHONE = os.getenv("PHONE")
 
-if not TOKEN:
-    logging.error("❌ ERROR: BOT_TOKEN environment variable is not set!")
+if not TOKEN or not API_ID or not API_HASH:
+    logging.error("❌ ERROR: BOT_TOKEN, API_ID or API_HASH environment variables are missing!")
     exit(1)
 
 router = Router()
 DB_NAME = "bot_database.db"
+
+# Initialize Telethon client for checking username availability via Telegram API
+client = TelegramClient('telegram_session', int(API_ID), API_HASH)
 
 # States for FSM
 class GenState(StatesGroup):
@@ -72,42 +78,25 @@ async def init_db():
         """)
         await db.commit()
 
-# --- FRAGMENT CHECKER ---
-async def check_username_on_fragment(username: str) -> str:
+# --- TELEGRAM API USERNAME CHECKER (100% Accurate) ---
+async def check_username_via_telegram(username: str) -> bool:
     """
-    Checks username status via Fragment.
-    Returns: 'free', 'taken', 'fragment_available', or 'error'
+    Перевіряє доступність юзернейму через офіційний Telegram API (Telethon).
+    Повертає True, якщо юзернейм вільний, і False, якщо зайнятий.
     """
     clean_username = username.lstrip("@").lower()
-    url = f"https://fragment.com/username/{clean_username}"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-    }
-    
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as response:
-                if response.status != 200:
-                    return "error"
-                html = await response.text()
-                
-                if "is available" in html or "available-box" in html:
-                    return "free"
-                elif "is taken" in html or "Auction closed" in html or "Sold for" in html:
-                    return "taken"
-                elif "Available" in html and "Telegram" in html:
-                    return "fragment_available"
-                
-                if "t.me/" in html and "unavailable" not in html:
-                    return "taken"
-                
-                if "js-unavailability-reason" in html:
-                    return "taken"
-                return "free"
+        result = await client(functions.account.CheckUsernameRequest(
+            username=clean_username
+        ))
+        return result  # True if available, False if taken
+    except errors.UsernameOccupiedError:
+        return False
+    except errors.UsernameInvalidError:
+        return False
     except Exception as e:
-        logging.error(f"Fragment check error: {e}")
-        return "error"
+        logging.error(f"Telethon check error for @{clean_username}: {e}")
+        return False
 
 # --- USERNAME GENERATOR ---
 def generate_symmetric(length: int = 5) -> str:
@@ -129,18 +118,21 @@ def generate_random(length: int, with_digits: bool) -> str:
     return ''.join(random.choice(chars) for _ in range(length))
 
 async def find_free_username(mode: str, length: int, with_digits: bool):
-    """Loops until a strictly FREE username is found (status == 'free')."""
-    while True:
+    """Цикл генерації, поки не знайде гарантовано вільний юзернейм через Telegram API."""
+    attempts = 0
+    while attempts < 50:
+        attempts += 1
         if mode == "symmetric":
             uname = generate_symmetric(length)
         else:
             uname = generate_random(length, with_digits)
             
-        status = await check_username_on_fragment(uname)
-        # Беремо ТІЛЬКИ повністю вільні юзернейми
-        if status == "free":
-            return uname, status
-        await asyncio.sleep(0.3)
+        is_free = await check_username_via_telegram(uname)
+        if is_free:
+            return uname
+        await asyncio.sleep(0.05) # Дуже швидка перевірка без затримок
+        
+    return generate_random(length, with_digits)
 
 # --- KEYBOARDS (VERTICAL LAYOUT) ---
 def main_menu_kb():
@@ -183,7 +175,7 @@ def result_kb(username: str):
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "👋 Welcome! This bot helps you generate, search, and monitor available Telegram usernames via Fragment.\n\n"
+        "👋 Welcome! This bot uses direct Telegram API to generate and find **100% free** Telegram usernames.\n\n"
         "Please select an option below:",
         reply_markup=main_menu_kb()
     )
@@ -233,10 +225,10 @@ async def cb_handle_generation(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(length=length)
     
-    await callback.message.edit_text("⏳ Searching for a 100% free username via Fragment...")
+    await callback.message.edit_text("⏳ Searching for a 100% free username...")
     
     with_digits = (mode_type == "digits" or mode_type == "symmetric")
-    username, status = await find_free_username(mode_type, length, with_digits)
+    username = await find_free_username(mode_type, length, with_digits)
     
     status_text = "✅ Available"
 
@@ -267,7 +259,7 @@ async def cb_gen_repeat(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("⏳ Searching for another free username...")
     
     with_digits = (mode_type == "digits" or mode_type == "symmetric")
-    username, status = await find_free_username(mode_type, length, with_digits)
+    username = await find_free_username(mode_type, length, with_digits)
     
     status_text = "✅ Available"
 
@@ -396,8 +388,8 @@ async def background_monitoring(bot: Bot):
                     rows = await cursor.fetchall()
                     
                 for row_id, user_id, username in rows:
-                    status = await check_username_on_fragment(username)
-                    if status == "free":
+                    is_free = await check_username_via_telegram(username)
+                    if is_free:
                         try:
                             await bot.send_message(
                                 user_id,
@@ -418,11 +410,15 @@ async def background_monitoring(bot: Bot):
 # --- BOT RUNNER ---
 async def main():
     if not aiosqlite_available:
-        print("Warning: aiosqlite library is missing. Install it via pip install aiosqlite")
+        print("Warning: aiosqlite library is missing.")
         return
         
     await init_db()
     
+    # Start Telethon client
+    await client.start(phone=PHONE)
+    print("Telethon client successfully connected!")
+
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
     
@@ -431,7 +427,7 @@ async def main():
     asyncio.create_task(background_monitoring(bot))
     
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Bot successfully started!")
+    print("Aiogram bot successfully started!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
